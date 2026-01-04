@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from processors.llm_extractor import ExtractedReceipt, get_extractor
 from storage.gdrive_client import GDriveClient
-from storage.sheet_client import GSheetsClient, create_record_from_extraction
+from storage.sheet_client import GSheetsClient, ReceiptRecord, create_record_from_extraction
 
 # Configure logging
 logging.basicConfig(
@@ -257,9 +257,24 @@ class HSAReceiptPipeline:
             logger.error(f"Drive upload failed: {e}")
             return None
 
-        # Step 5: Add to tracking spreadsheet
+        # Step 5: Check for duplicates and add to tracking spreadsheet
         record_id = None
+        duplicate_of = None
         try:
+            # Check for potential duplicates (same provider, date, amount)
+            if extraction.service_date:
+                duplicates = self.sheets.find_duplicates(
+                    provider=extraction.provider_name,
+                    service_date=extraction.service_date,
+                    amount=extraction.patient_responsibility,
+                )
+                if duplicates:
+                    duplicate_of = duplicates[0].get("ID")
+                    logger.warning(
+                        f"Potential duplicate of ID {duplicate_of}: "
+                        f"{duplicates[0].get('Provider')} on {duplicates[0].get('Service Date')}"
+                    )
+
             file_path_str = (
                 self.gdrive.get_folder_path(extraction.category, extraction.patient_name)
                 + "/"
@@ -271,6 +286,14 @@ class HSAReceiptPipeline:
                 file_path=file_path_str,
                 file_link=drive_file.web_link,
             )
+
+            # Add duplicate reference to notes if found
+            if duplicate_of:
+                existing_notes = record.notes or ""
+                record = ReceiptRecord(
+                    **{**record.__dict__, "notes": f"[Duplicate of ID {duplicate_of}] {existing_notes}".strip()}
+                )
+
             record_id = self.sheets.add_record(record)
             logger.info(f"Added to spreadsheet: ID {record_id}")
         except Exception as e:
@@ -282,6 +305,7 @@ class HSAReceiptPipeline:
             "extraction": extraction.to_dict(),
             "confidence_level": confidence_level,
             "needs_review": needs_review,
+            "duplicate_of": duplicate_of,
             "drive_file": {
                 "id": drive_file.id,
                 "name": drive_file.name,
@@ -571,68 +595,6 @@ try:
                         console.print(f"{status} {r['file']}: ${result['extraction']['patient_responsibility']:.2f}")
 
                 console.print(f"\n[green]Processed {len(results)} files[/green]")
-
-    @cli.command("amazon-scan")
-    @click.option("--year", type=int, default=None, help="Year to scan (default: current)")
-    @click.option("--max-orders", type=int, default=20, help="Maximum orders to check")
-    @click.option("--process", is_flag=True, help="Process downloaded invoices through pipeline")
-    @click.pass_context
-    def amazon_scan(ctx, year, max_orders, process):
-        """Scan Amazon orders for HSA-eligible purchases using vision LLM.
-
-        Requires AMAZON_EMAIL and AMAZON_PASSWORD environment variables.
-        Will open a browser window - complete 2FA/CAPTCHA if prompted.
-        """
-        import asyncio
-
-        from extractors.amazon_hsa_scraper import AmazonHSAScraper, get_amazon_credentials
-
-        pipeline = ctx.obj["pipeline"]
-
-        email, password = get_amazon_credentials()
-
-        if not email or not password:
-            console.print("[red]Could not get Amazon credentials[/red]")
-            console.print("Set AMAZON_EMAIL/AMAZON_PASSWORD env vars, or store in macOS Keychain")
-            return
-
-        console.print(f"[cyan]Scanning Amazon orders for HSA-eligible items...[/cyan]")
-        console.print("[yellow]Complete 2FA/CAPTCHA in browser if prompted[/yellow]\n")
-
-        async def run_scan():
-            async with AmazonHSAScraper(
-                vision_extractor=pipeline.llm,
-                downloads_dir="tmp/amazon_invoices",
-                headless=False,  # Show browser for 2FA
-            ) as scraper:
-                orders = await scraper.scan_and_download_hsa_orders(
-                    email=email,
-                    password=password,
-                    year=year or datetime.now().year,
-                    max_orders=max_orders,
-                )
-                return orders
-
-        orders = asyncio.run(run_scan())
-
-        if not orders:
-            console.print("[yellow]No HSA-eligible orders found[/yellow]")
-            return
-
-        console.print(f"\n[green]Found {len(orders)} HSA-eligible orders:[/green]")
-        for order in orders:
-            console.print(f"  Order {order.order_id}")
-            if order.invoice_path:
-                console.print(f"    └─ Invoice: {order.invoice_path}")
-
-        if process and orders:
-            console.print("\n[cyan]Processing invoices through pipeline...[/cyan]")
-            for order in orders:
-                if order.invoice_path and order.invoice_path.exists():
-                    result = pipeline.process_file(str(order.invoice_path), dry_run=False)
-                    if result:
-                        status = "[green]OK[/green]" if not result.get("needs_review") else "[yellow]REVIEW[/yellow]"
-                        console.print(f"  {status} {order.order_id}: ${result['extraction']['patient_responsibility']:.2f}")
 
 except ImportError:
     # Fallback if click/rich not installed

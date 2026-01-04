@@ -137,6 +137,53 @@ class GSheetsClient:
     def get_all_records(self) -> List[Dict[str, Any]]:
         worksheet = self._get_worksheet()
         return worksheet.get_all_records()
+
+    def find_duplicates(
+        self,
+        provider: str,
+        service_date: str,
+        amount: float,
+        tolerance: float = 0.01,
+    ) -> List[Dict[str, Any]]:
+        """Find potential duplicate records by matching provider, date, and amount.
+
+        This helps detect when both a hospital bill and EOB are uploaded for the
+        same service. They should be linked rather than counted twice.
+
+        Args:
+            provider: Provider name to match (fuzzy - checks if either contains the other)
+            service_date: Service date in YYYY-MM-DD format
+            amount: Patient responsibility amount
+            tolerance: Amount tolerance for matching (default $0.01)
+
+        Returns:
+            List of matching records
+        """
+        records = self.get_all_records()
+        matches = []
+        provider_lower = provider.lower()
+
+        for record in records:
+            # Check date match
+            if record.get("Service Date") != service_date:
+                continue
+
+            # Check provider match (fuzzy - either contains the other)
+            record_provider = (record.get("Provider") or "").lower()
+            if not (provider_lower in record_provider or record_provider in provider_lower):
+                continue
+
+            # Check amount match (within tolerance)
+            try:
+                record_amount = float(record.get("Patient Responsibility", 0))
+                if abs(record_amount - amount) > tolerance:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            matches.append(record)
+
+        return matches
     
     def get_unreimbursed_total(self) -> float:
         records = self.get_all_records()
