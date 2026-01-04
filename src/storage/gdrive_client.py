@@ -23,7 +23,9 @@ class DriveFile:
 class GDriveClient:
     """Google Drive client for HSA receipt file management."""
     
-    SCOPES = ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.metadata.readonly']
+    SCOPES = [
+        'https://www.googleapis.com/auth/drive',  # Full Drive access (needed to delete from _Inbox)
+    ]
     
     # Default folder structure - family names are passed at runtime from config
     CATEGORIES = ["Medical", "Dental", "Vision", "Pharmacy"]
@@ -200,5 +202,5 @@ if __name__ == "__main__":
         creds = sys.argv[2] if len(sys.argv) > 2 else "config/credentials/gdrive_credentials.json"
         token = sys.argv[3] if len(sys.argv) > 3 else "config/credentials/gdrive_token.json"
         client = GDriveClient(credentials_file=creds, token_file=token)
-        folders = client.setup_folder_structure(year=2026, family_members=["Ming", "Wife", "Son"])
+        folders = client.setup_folder_structure(year=2026, family_members=["Ming", "Vanessa", "Maxwell"])
         print(f"Created {len(folders)} folders")

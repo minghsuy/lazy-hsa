@@ -35,7 +35,7 @@ class EmailMessage:
 
 class GmailExtractor:
     """Extract medical-related emails and attachments from Gmail."""
-    
+
     MEDICAL_QUERIES = [
         'from:(sutter OR sutterhealth) has:attachment',
         'from:(stanford OR stanfordhealthcare) has:attachment',
@@ -43,6 +43,22 @@ class GmailExtractor:
         'from:(vsp OR "vision service plan") has:attachment',
         'from:(cvs OR cvshealth) subject:(prescription OR receipt)',
         'from:(express-scripts OR expressscripts) subject:(EOB OR claim)',
+    ]
+
+    # Amazon/HSA retail queries - items marked FSA/HSA eligible
+    AMAZON_HSA_QUERIES = [
+        'from:auto-confirm@amazon.com subject:"Your Amazon.com order"',
+        'from:ship-confirm@amazon.com subject:shipped',
+        'from:(fsastore OR hsastore) subject:(order OR receipt)',
+    ]
+
+    # Keywords that suggest HSA-eligible Amazon purchases
+    HSA_KEYWORDS = [
+        'first aid', 'bandage', 'thermometer', 'blood pressure',
+        'glucose', 'diabetic', 'insulin', 'medical', 'health',
+        'prescription', 'otc', 'medicine', 'vitamin', 'supplement',
+        'contact lens', 'reading glasses', 'sunscreen spf',
+        'pain relief', 'allergy', 'cold', 'flu', 'cough',
     ]
     
     SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
@@ -124,6 +140,71 @@ class GmailExtractor:
         
         logger.info(f"Extracted {len(all_messages)} unique medical emails")
         return all_messages
+
+    def extract_amazon_orders(
+        self, after_date: Optional[datetime] = None, hsa_only: bool = True
+    ) -> List[EmailMessage]:
+        """
+        Extract Amazon order emails, optionally filtering for HSA-eligible items.
+
+        Args:
+            after_date: Only get orders after this date
+            hsa_only: If True, only return orders with HSA keywords in subject/body
+
+        Returns:
+            List of EmailMessage objects for Amazon orders
+        """
+        all_messages = []
+        seen_ids = set()
+
+        for query in self.AMAZON_HSA_QUERIES:
+            message_ids = self.search_messages(query=query, max_results=100, after_date=after_date)
+
+            for msg_id in message_ids:
+                if msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
+
+                try:
+                    msg = self.get_message(msg_id)
+
+                    # If hsa_only, check for HSA keywords
+                    if hsa_only:
+                        combined_text = (msg.subject + " " + msg.body_text).lower()
+                        has_hsa_keyword = any(kw in combined_text for kw in self.HSA_KEYWORDS)
+                        if not has_hsa_keyword:
+                            continue
+
+                    all_messages.append(msg)
+                except Exception as e:
+                    logger.error(f"Error processing Amazon message {msg_id}: {e}")
+
+        logger.info(f"Extracted {len(all_messages)} Amazon order emails")
+        return all_messages
+
+    def extract_order_id_from_amazon_email(self, msg: EmailMessage) -> Optional[str]:
+        """Extract Amazon order ID from email subject or body."""
+        import re
+
+        # Amazon order ID pattern: XXX-XXXXXXX-XXXXXXX
+        pattern = r'\d{3}-\d{7}-\d{7}'
+
+        # Check subject first
+        match = re.search(pattern, msg.subject)
+        if match:
+            return match.group()
+
+        # Check body
+        match = re.search(pattern, msg.body_text)
+        if match:
+            return match.group()
+
+        return None
+
+    def get_amazon_invoice_url(self, order_id: str) -> str:
+        """Generate Amazon invoice URL for an order ID."""
+        # This URL requires authentication - user must be logged into Amazon
+        return f"https://www.amazon.com/gp/css/summary/print.html/ref=ppx_od_dt_b_invoice?ie=UTF8&orderID={order_id}"
     
     def get_message(self, message_id: str) -> EmailMessage:
         service = self._get_service()

@@ -63,14 +63,16 @@ class ExtractedReceipt:
         return f"{date}_{provider}_{service}_${amount}.{extension}"
 
 
-EXTRACTION_PROMPT = """You are a medical receipt/EOB data extractor. Analyze this document image and extract structured information.
+EXTRACTION_PROMPT_TEMPLATE = """You are a medical receipt/EOB data extractor. Analyze this document image and extract structured information.
+
+The family members are: {family_members}
 
 Extract the following as a JSON object:
-{
-  "provider_name": "Name of healthcare provider or pharmacy",
+{{
+  "provider_name": "Name of healthcare provider, pharmacy, or retailer",
   "service_date": "YYYY-MM-DD format or null if unclear",
-  "service_type": "Brief description of service (e.g., 'Office Visit', 'Prescription', 'Dental Cleaning')",
-  "patient_name": "Patient name or null if not visible",
+  "service_type": "Brief description of service or product",
+  "patient_name": "MUST be one of: {family_members} - match based on recipient/patient name in document",
   "billed_amount": 0.00,
   "insurance_paid": 0.00,
   "patient_responsibility": 0.00,
@@ -79,13 +81,23 @@ Extract the following as a JSON object:
   "document_type": "receipt|eob|statement|claim|prescription",
   "confidence_score": 0.95,
   "notes": "Any uncertainties or important details"
-}
+}}
 
 Rules:
-- For EOBs, patient_responsibility is what the patient owes after insurance
-- If amounts are unclear, set confidence_score lower
-- hsa_eligible should be true for qualified medical expenses
+- patient_name MUST be exactly one of: {family_members}
+- Match the patient/recipient in the document to the closest family member name
+- If unclear, default to the first family member ({default_patient})
+- patient_responsibility is the amount paid (retail) or owed after insurance (EOBs)
 - Respond with ONLY the JSON object, no other text"""
+
+
+def get_extraction_prompt(family_members: list[str] | None = None) -> str:
+    """Generate extraction prompt with family member names."""
+    family_members = family_members or ["Ming", "Vanessa", "Maxwell"]
+    return EXTRACTION_PROMPT_TEMPLATE.format(
+        family_members=", ".join(family_members),
+        default_patient=family_members[0],
+    )
 
 
 class VisionExtractor:
@@ -97,12 +109,15 @@ class VisionExtractor:
         model: str = "mistral-small3",
         max_tokens: int = 2048,
         temperature: float = 0.1,
+        family_members: list[str] | None = None,
     ):
         self.api_base = api_base.rstrip("/")
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.family_members = family_members or ["Ming", "Vanessa", "Maxwell"]
         self._client = None
+        self._prompt = get_extraction_prompt(self.family_members)
 
     def _init_client(self):
         if self._client is None:
@@ -164,7 +179,7 @@ class VisionExtractor:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": EXTRACTION_PROMPT},
+                            {"type": "text", "text": self._prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
