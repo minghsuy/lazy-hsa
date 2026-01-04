@@ -129,24 +129,87 @@ class GmailExtractor:
         service = self._get_service()
         msg = service.users().messages().get(userId=self.user_email, id=message_id, format='full').execute()
         headers = {h['name'].lower(): h['value'] for h in msg['payload'].get('headers', [])}
-        
+
         from email.utils import parsedate_to_datetime
         try:
             date = parsedate_to_datetime(headers.get('date', ''))
-        except:
+        except Exception:
             date = datetime.now()
-        
+
+        # Extract body and attachments
+        body_text, body_html, attachments = self._parse_payload(
+            msg['payload'], message_id, headers.get('subject', ''), headers.get('from', ''), date
+        )
+
         return EmailMessage(
             message_id=message_id,
             thread_id=msg.get('threadId', ''),
             subject=headers.get('subject', '(No Subject)'),
             sender=headers.get('from', ''),
             date=date,
-            body_text="",
-            body_html="",
-            attachments=[],
+            body_text=body_text,
+            body_html=body_html,
+            attachments=attachments,
             labels=msg.get('labelIds', [])
         )
+
+    def _parse_payload(self, payload: dict, msg_id: str, subject: str, sender: str, date: datetime):
+        """Recursively parse email payload to extract body and attachments."""
+        body_text = ""
+        body_html = ""
+        attachments = []
+
+        mime_type = payload.get('mimeType', '')
+        parts = payload.get('parts', [])
+
+        if parts:
+            # Multipart message
+            for part in parts:
+                t, h, a = self._parse_payload(part, msg_id, subject, sender, date)
+                body_text += t
+                body_html += h
+                attachments.extend(a)
+        else:
+            # Single part
+            body = payload.get('body', {})
+            data = body.get('data')
+            attachment_id = body.get('attachmentId')
+            filename = payload.get('filename', '')
+
+            if attachment_id and filename:
+                # This is an attachment - fetch it
+                att_data = self._get_attachment(msg_id, attachment_id)
+                if att_data:
+                    attachments.append(EmailAttachment(
+                        filename=filename,
+                        mime_type=mime_type,
+                        data=att_data,
+                        message_id=msg_id,
+                        subject=subject,
+                        sender=sender,
+                        date=date,
+                    ))
+            elif data:
+                # This is body content
+                decoded = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+                if 'text/plain' in mime_type:
+                    body_text += decoded
+                elif 'text/html' in mime_type:
+                    body_html += decoded
+
+        return body_text, body_html, attachments
+
+    def _get_attachment(self, message_id: str, attachment_id: str) -> Optional[bytes]:
+        """Fetch attachment data by ID."""
+        try:
+            service = self._get_service()
+            att = service.users().messages().attachments().get(
+                userId=self.user_email, messageId=message_id, id=attachment_id
+            ).execute()
+            return base64.urlsafe_b64decode(att['data'])
+        except Exception as e:
+            logger.error(f"Failed to get attachment {attachment_id}: {e}")
+            return None
     
     def _save_attachments(self, attachments: List[EmailAttachment], output_dir: Path):
         output_dir = Path(output_dir)

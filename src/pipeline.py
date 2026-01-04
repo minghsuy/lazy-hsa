@@ -443,6 +443,82 @@ try:
         console.print(table)
         console.print(f"\n Total Unreimbursed: [bold]${data['total_unreimbursed']:,.2f}[/bold]")
 
+    @cli.command("email-scan")
+    @click.option("--since", help="Scan emails since date (YYYY-MM-DD)")
+    @click.option("--dry-run", is_flag=True, help="Preview without processing")
+    @click.option("--output-dir", default="tmp/email_attachments", help="Where to save attachments")
+    @click.pass_context
+    def email_scan(ctx, since, dry_run, output_dir):
+        """Scan Gmail for medical emails and process attachments."""
+        from extractors.gmail_extractor import GmailExtractor
+        from pathlib import Path
+        import tempfile
+
+        pipeline = ctx.obj["pipeline"]
+        config = pipeline.config
+
+        # Get credentials path from config
+        gdrive_config = config.get("google_drive", {})
+        creds_file = gdrive_config.get("credentials_file", "config/credentials/gdrive_credentials.json")
+        token_file = "config/credentials/gmail_token.json"
+
+        # Parse since date
+        since_date = None
+        if since:
+            since_date = datetime.strptime(since, "%Y-%m-%d")
+        else:
+            # Default: HSA start date
+            since_date = pipeline.hsa_start_date
+
+        console.print(f"[cyan]Scanning emails since {since_date.strftime('%Y-%m-%d')}...[/cyan]")
+
+        extractor = GmailExtractor(credentials_file=creds_file, token_file=token_file)
+
+        # Create output dir
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Extract medical emails
+        messages = extractor.extract_medical_emails(after_date=since_date, output_dir=output_path)
+
+        console.print(f"\n[green]Found {len(messages)} medical emails[/green]")
+
+        # Count and list attachments
+        total_attachments = 0
+        for msg in messages:
+            if msg.attachments:
+                total_attachments += len(msg.attachments)
+                console.print(f"  {msg.date.strftime('%Y-%m-%d')} | {msg.sender[:40]} | {msg.subject[:50]}")
+                for att in msg.attachments:
+                    console.print(f"    └─ [blue]{att.filename}[/blue] ({att.mime_type})")
+
+        console.print(f"\n[cyan]Total attachments: {total_attachments}[/cyan]")
+
+        if dry_run:
+            console.print("[yellow]Dry run - not processing files[/yellow]")
+            return
+
+        # Process each PDF attachment
+        if total_attachments > 0:
+            console.print("\n[cyan]Processing attachments through pipeline...[/cyan]")
+            processed = 0
+            for msg in messages:
+                for att in msg.attachments:
+                    if att.mime_type == "application/pdf" or att.filename.lower().endswith(".pdf"):
+                        # Save to temp file
+                        filepath = output_path / f"{msg.date.strftime('%Y%m%d')}_{att.filename}"
+                        with open(filepath, "wb") as f:
+                            f.write(att.data)
+
+                        console.print(f"\nProcessing: {att.filename}")
+                        result = pipeline.process_file(str(filepath), dry_run=False)
+                        if result:
+                            processed += 1
+                            status = "[green]OK[/green]" if not result.get("needs_review") else "[yellow]REVIEW[/yellow]"
+                            console.print(f"  {status} {result['extraction']['provider_name']}: ${result['extraction']['patient_responsibility']:.2f}")
+
+            console.print(f"\n[green]Processed {processed} attachments[/green]")
+
 except ImportError:
     # Fallback if click/rich not installed
     def cli():

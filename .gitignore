@@ -40,3 +40,6 @@ build/
 
 # Test receipts (personal data)
 test_receipts/
+
+# Temp/working directories
+tmp/
