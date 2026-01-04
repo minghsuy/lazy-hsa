@@ -1,0 +1,42 @@
+# Credentials - NEVER commit these
+config/credentials/
+*.json
+!config/config.example.yaml
+
+# Config with secrets
+config/config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.uv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Temp files
+/tmp/
+*.tmp
+
+# Test receipts (personal data)
+test_receipts/

@@ -1,0 +1,139 @@
+# HSA Receipt System Configuration
+# Copy to config.yaml and fill in your values
+
+# =============================================================================
+# LLM Settings (Mistral Small 3 with Vision)
+# =============================================================================
+llm:
+  # Provider: "ollama" or "vllm" (both use OpenAI-compatible API)
+  provider: "ollama"
+
+  # Model name (as shown in `ollama list` or vLLM)
+  model: "mistral-small3"
+
+  # API endpoint
+  # Ollama default: http://localhost:11434/v1
+  # vLLM default: http://localhost:8000/v1
+  api_base: "http://localhost:11434/v1"
+
+  # Vision-enabled model processes images directly (no separate OCR needed)
+  vision_enabled: true
+
+  # Generation settings
+  max_tokens: 2048
+  temperature: 0.1  # Low for consistent extraction
+
+# =============================================================================
+# Google Drive Settings
+# =============================================================================
+google_drive:
+  root_folder: "HSA_Receipts"
+  credentials_file: "config/credentials/gdrive_credentials.json"
+  token_file: "config/credentials/gdrive_token.json"
+
+# =============================================================================
+# Google Sheets Settings
+# =============================================================================
+google_sheets:
+  spreadsheet_name: "HSA_Master_Index"
+  worksheet_name: "Receipts"
+
+# =============================================================================
+# Email Accounts
+# =============================================================================
+email:
+  ming:
+    gmail:
+      address: "YOUR_GMAIL@gmail.com"
+      # Uses OAuth, no password needed
+    icloud:
+      address: "YOUR_ICLOUD@icloud.com"
+      app_password: "xxxx-xxxx-xxxx-xxxx"  # Generate at appleid.apple.com
+      imap_server: "imap.mail.me.com"
+  wife:
+    gmail:
+      address: "WIFE_GMAIL@gmail.com"
+    icloud:
+      address: "WIFE_ICLOUD@icloud.com"
+      app_password: "xxxx-xxxx-xxxx-xxxx"
+      imap_server: "imap.mail.me.com"
+
+# =============================================================================
+# Scanner Email Inbox
+# =============================================================================
+scanner:
+  monitor_email: "receipts.weng@gmail.com"
+  gmail_label: "Scanner"
+
+# =============================================================================
+# Family Members
+# =============================================================================
+family:
+  - name: "Ming"
+    role: "primary"
+  - name: "WIFE_NAME"
+    role: "spouse"
+  - name: "SON_NAME"
+    role: "dependent"
+
+# =============================================================================
+# Provider Search Patterns (for email filtering)
+# =============================================================================
+providers:
+  medical:
+    - "sutter"
+    - "sutterhealth"
+    - "stanford"
+    - "stanfordhealthcare"
+    - "aetna"
+  dental:
+    - "delta dental"
+    - "deltadentalins"
+  vision:
+    - "vsp"
+    - "visionserviceplan"
+  pharmacy:
+    - "cvs"
+    - "express-scripts"
+    - "expressscripts"
+    - "caremark"
+  hsa_eligible_retail:
+    - "amazon"
+    - "fsa store"
+    - "hsastore"
+
+# =============================================================================
+# File Naming
+# =============================================================================
+file_naming:
+  date_format: "%Y-%m-%d"
+  template: "{date}_{provider}_{service_type}_${amount}"
+
+# =============================================================================
+# Processing Settings
+# =============================================================================
+processing:
+  inbox_folder: "_Inbox"
+  processing_folder: "_Processing"
+  rejected_folder: "_Rejected"
+
+  # Confidence thresholds
+  auto_process_threshold: 0.85    # >= 85%: auto-process
+  review_threshold: 0.70          # 70-84%: process but flag for review
+  # < 70%: requires manual review
+
+# =============================================================================
+# HSA Settings
+# =============================================================================
+hsa:
+  start_date: "2026-01-01"
+  provider: "Fidelity"
+
+# =============================================================================
+# Backup Settings (optional)
+# =============================================================================
+backup:
+  enabled: false
+  # local_path: "/path/to/backup"
+  # Or use rsync to NAS
+  # rsync_target: "user@nas:/backup/hsa-receipts"
