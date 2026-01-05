@@ -181,12 +181,28 @@ SUTTER HEALTH-SPECIFIC RULES:
 - document_type is likely "statement" or "eob"
 """,
 
-    "kaiser": """
-KAISER PERMANENTE-SPECIFIC RULES:
-- Look for "Member Responsibility" for patient_responsibility
-- Look for "Plan Paid" for insurance_paid
-- May have multiple service lines - use earliest date
+    "aetna": """
+AETNA EOB-SPECIFIC RULES:
+- This is a medical EOB from Aetna HDHP
+- Look for "Member Responsibility" or "Your Responsibility" for patient_responsibility
+- Look for "Plan Paid" or "Aetna Paid" for insurance_paid
+- billed_amount is the "Charged" or "Billed" amount
+- May have multiple service lines - sum all patient responsibility amounts
+- Use earliest "Date of Service" if multiple dates
 - category = "medical"
+- document_type = "eob"
+""",
+
+    "express_scripts": """
+EXPRESS SCRIPTS-SPECIFIC RULES:
+- This is a pharmacy receipt/invoice from Express Scripts (PBM)
+- Medications delivered by mail are HSA-eligible prescriptions
+- Look for "Your Cost" or "You Pay" for patient_responsibility
+- service_type should be the medication name(s)
+- provider_name = "Express Scripts"
+- category = "pharmacy"
+- document_type = "prescription"
+- hsa_eligible = true (prescriptions are always eligible)
 """,
 
     "delta_dental": """
@@ -222,13 +238,15 @@ def detect_provider_skill(filename: str, hints: list[str] | None = None) -> str 
         text_to_check += " " + " ".join(h.lower() for h in hints)
 
     # Check for provider matches
+    # NOTE: EOB routing to EOBs/{category}/ folder is planned for v0.3.0
     provider_patterns = {
         "costco": ["costco", "store 423", "store423"],  # Costco store numbers
         "cvs": ["cvs"],
         "walgreens": ["walgreens", "walgreen"],
         "amazon": ["amazon"],
+        "express_scripts": ["express scripts", "express_scripts", "express-scripts", "expressscripts", "esrx"],
         "sutter": ["sutter", "pamf", "palo alto medical"],
-        "kaiser": ["kaiser"],
+        "aetna": ["aetna"],
         "delta_dental": ["delta dental", "deltadental"],
         "vsp": ["vsp", "vision service plan"],
     }

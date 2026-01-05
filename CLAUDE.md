@@ -115,8 +115,9 @@ Provider-specific extraction prompts activate automatically based on filename pa
 | **CVS** | "cvs" | FSA/HSA labels, Rx numbers for prescriptions |
 | **Walgreens** | "walgreens" | FSA/HSA markers, copay extraction |
 | **Amazon** | "amazon" | Extracts Grand Total directly (includes tax) |
-| **Sutter** | "sutter", "pamf" | Hospital EOB format, Patient Responsibility field |
-| **Kaiser** | "kaiser" | Member Responsibility, Plan Paid fields |
+| **Express Scripts** | "express scripts", "esrx" | Mail-order pharmacy, medication name extraction |
+| **Sutter** | "sutter", "pamf" | Hospital/clinic bills, Patient Responsibility field |
+| **Aetna** | "aetna" | Medical EOB, Member Responsibility, Plan Paid fields |
 | **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" | Vision EOB format |
 

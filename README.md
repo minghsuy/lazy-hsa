@@ -159,8 +159,9 @@ The system includes specialized extraction rules for common providers:
 | **CVS** | "cvs" in filename | FSA/HSA eligibility labels, Rx numbers |
 | **Walgreens** | "walgreens" in filename | FSA/HSA markers, copay extraction |
 | **Amazon** | "amazon" in filename | Ship-to address for patient, Grand Total extraction |
-| **Sutter/PAMF** | "sutter" or "pamf" | Hospital EOB format, Patient Responsibility field |
-| **Kaiser** | "kaiser" in filename | Member Responsibility, Plan Paid fields |
+| **Express Scripts** | "express scripts" or "esrx" | Mail-order pharmacy prescriptions |
+| **Sutter/PAMF** | "sutter" or "pamf" | Hospital/clinic bills, Patient Responsibility field |
+| **Aetna** | "aetna" in filename | Medical EOB, Member Responsibility field |
 | **Delta Dental** | "delta dental" in filename | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" in filename | Vision EOB format |
 

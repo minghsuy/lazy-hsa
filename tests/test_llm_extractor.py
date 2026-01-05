@@ -43,9 +43,16 @@ class TestDetectProviderSkill:
         assert detect_provider_skill("pamf_statement.pdf") == "sutter"
         assert detect_provider_skill("palo alto medical.pdf", hints=["palo alto medical"]) == "sutter"
 
-    def test_detect_kaiser(self):
-        """Detect Kaiser from filename."""
-        assert detect_provider_skill("kaiser_bill.pdf") == "kaiser"
+    def test_detect_aetna(self):
+        """Detect Aetna from filename."""
+        assert detect_provider_skill("aetna_eob.pdf") == "aetna"
+        assert detect_provider_skill("Aetna_Medical_EOB.pdf") == "aetna"
+
+    def test_detect_express_scripts(self):
+        """Detect Express Scripts from filename."""
+        assert detect_provider_skill("express_scripts_invoice.pdf") == "express_scripts"
+        assert detect_provider_skill("express-scripts-rx.pdf") == "express_scripts"
+        assert detect_provider_skill("esrx_medication.pdf") == "express_scripts"
 
     def test_detect_delta_dental(self):
         """Detect Delta Dental from filename."""
