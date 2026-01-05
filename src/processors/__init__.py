@@ -3,8 +3,8 @@ from .llm_extractor import (
     Category,
     DocumentType,
     ExtractedReceipt,
-    VisionExtractor,
     MockVisionExtractor,
+    VisionExtractor,
     get_extractor,
 )
 

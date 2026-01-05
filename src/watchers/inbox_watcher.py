@@ -2,9 +2,8 @@
 
 import logging
 import time
-from datetime import datetime, timedelta
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +23,8 @@ class DriveInboxWatcher:
         gdrive_client,
         process_callback: Callable[[str], dict],
         inbox_folder_name: str = "_Inbox",
-        family_names: Optional[list[str]] = None,
+        family_names: list[str] | None = None,
+        dry_run: bool = False,
     ):
         """
         Args:
@@ -32,11 +32,13 @@ class DriveInboxWatcher:
             process_callback: Function(local_path, patient_hint) -> result dict
             inbox_folder_name: Name of inbox folder to watch
             family_names: List of family member names for filename-based patient detection
+            dry_run: If True, process files but don't delete from inbox
         """
         self.gdrive = gdrive_client
         self.process_callback = process_callback
         self.inbox_folder_name = inbox_folder_name
         self.family_names = family_names or ["Ming", "Vanessa", "Maxwell"]
+        self.dry_run = dry_run
         self._inbox_folder_id = None
         self._processed_files = set()  # Track processed file IDs
 
@@ -70,6 +72,7 @@ class DriveInboxWatcher:
     def download_file(self, file_id: str, filename: str, download_dir: Path) -> Path:
         """Download a file from Drive to local path."""
         import io
+
         from googleapiclient.http import MediaIoBaseDownload
 
         service = self.gdrive._get_service()
@@ -166,9 +169,12 @@ class DriveInboxWatcher:
                     # Delete local temp file
                     local_path.unlink(missing_ok=True)
 
-                    # Delete from inbox (file has been uploaded to proper folder)
-                    self.delete_file(file_id)
-                    logger.info(f"Processed and removed from inbox: {filename}")
+                    # Delete from inbox (unless dry run)
+                    if not self.dry_run:
+                        self.delete_file(file_id)
+                        logger.info(f"Processed and removed from inbox: {filename}")
+                    else:
+                        logger.info(f"Dry run - file kept in inbox: {filename}")
 
             except Exception as e:
                 logger.error(f"Error processing {filename}: {e}")
@@ -182,10 +188,10 @@ class DriveInboxWatcher:
 
     def _is_receipt_file(self, filename: str) -> bool:
         """Check if file is a receipt type we can process."""
-        extensions = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".gif"}
+        extensions = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".gif", ".heic", ".heif"}
         return Path(filename).suffix.lower() in extensions
 
-    def _extract_patient_hint(self, filename: str) -> Optional[str]:
+    def _extract_patient_hint(self, filename: str) -> str | None:
         """Extract patient name hint from filename if family name is present.
 
         Examples:

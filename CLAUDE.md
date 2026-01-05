@@ -50,10 +50,12 @@ hsa setup
 # Process single file or directory
 hsa process --file receipt.pdf
 hsa process --dir ./receipts/ --patient Vanessa
+hsa process --file costco_receipt.png --dry-run  # Preview without committing
 
 # Process files from Google Drive _Inbox
 hsa inbox              # One-time check
 hsa inbox --watch      # Continuous polling
+hsa inbox --dry-run    # Preview extraction without modifying Drive/Sheets
 
 # Scan Gmail for medical emails
 hsa email-scan --since 2026-01-01
@@ -80,6 +82,8 @@ hsa summary
 - [x] Patient name detection from filenames (e.g., "CVS Vanessa prescription.pdf")
 - [x] LLM prompt constrains patient to family member names only
 - [x] Duplicate detection (same provider + date + amount)
+- [x] Dry-run mode for inbox and process commands
+- [x] Provider-specific extraction skills (see below)
 
 ## What's Left (Phase 4: Validation & Robustness)
 
@@ -100,6 +104,26 @@ hsa summary
 - [ ] **Scheduled Gmail scanning**: Cron job or systemd timer
 - [ ] **OCR fallback**: For when vision LLM fails (very low confidence)
 - [ ] **Receipt image enhancement**: Deskew, contrast adjustment before LLM
+
+## Provider Skills System
+
+Provider-specific extraction prompts activate automatically based on filename patterns. Defined in `src/processors/llm_extractor.py`:
+
+| Provider | Triggers | Special Handling |
+|----------|----------|------------------|
+| **Costco** | "costco" in filename | Looks for FSA star (*) markers, sums only eligible items |
+| **CVS** | "cvs" in filename | FSA/HSA labels, Rx numbers for prescriptions |
+| **Walgreens** | "walgreens" | FSA/HSA markers, copay extraction |
+| **Amazon** | "amazon" | Ship-to address for patient, HSA Store items |
+| **Sutter** | "sutter", "pamf" | Hospital EOB format, Patient Responsibility field |
+| **Kaiser** | "kaiser" | Member Responsibility, Plan Paid fields |
+| **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
+| **VSP** | "vsp" | Vision EOB format |
+
+### Adding New Provider Skills
+1. Add skill to `PROVIDER_SKILLS` dict in `llm_extractor.py`
+2. Add pattern to `provider_patterns` in `detect_provider_skill()`
+3. Test with `hsa inbox --dry-run` before committing
 
 ## Removed Features
 - **Amazon HSA scraper**: Removed because Amazon's 2FA/CAPTCHA/passkey requirements make automation impractical. Manual invoice download is simpler.

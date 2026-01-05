@@ -1,10 +1,9 @@
 """Google Drive Client for HSA Receipt System"""
-from pathlib import Path
-from datetime import datetime
-from typing import Optional, List, Dict
-from dataclasses import dataclass
 import logging
 import mimetypes
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -22,34 +21,34 @@ class DriveFile:
 
 class GDriveClient:
     """Google Drive client for HSA receipt file management."""
-    
+
     SCOPES = [
         'https://www.googleapis.com/auth/drive',  # Full Drive access (needed to delete from _Inbox)
     ]
-    
+
     # Default folder structure - family names are passed at runtime from config
     CATEGORIES = ["Medical", "Dental", "Vision", "Pharmacy"]
     EOB_CATEGORIES = ["Medical", "Dental", "Vision"]
-    
+
     SPECIAL_FOLDERS = ["_Inbox", "_Processing", "_Rejected"]
-    
+
     def __init__(self, credentials_file: str, token_file: str, root_folder_name: str = "HSA_Receipts"):
         self.credentials_file = Path(credentials_file)
         self.token_file = Path(token_file)
         self.root_folder_name = root_folder_name
         self._service = None
         self._folder_cache = {}
-        
+
     def _get_service(self):
         if self._service is not None:
             return self._service
 
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
-        from googleapiclient.discovery import build
-        from google_auth_httplib2 import AuthorizedHttp
         import httplib2
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_httplib2 import AuthorizedHttp
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
 
         creds = None
         if self.token_file.exists():
@@ -71,20 +70,20 @@ class GDriveClient:
         authorized_http = AuthorizedHttp(creds, http=http)
         self._service = build('drive', 'v3', http=authorized_http)
         return self._service
-    
-    def get_or_create_folder(self, folder_name: str, parent_id: Optional[str] = None) -> str:
+
+    def get_or_create_folder(self, folder_name: str, parent_id: str | None = None) -> str:
         cache_key = f"{parent_id or 'root'}:{folder_name}"
         if cache_key in self._folder_cache:
             return self._folder_cache[cache_key]
-        
+
         service = self._get_service()
         query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
         if parent_id:
             query += f" and '{parent_id}' in parents"
-        
+
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
         files = results.get('files', [])
-        
+
         if files:
             folder_id = files[0]['id']
         else:
@@ -94,11 +93,11 @@ class GDriveClient:
             folder = service.files().create(body=metadata, fields='id').execute()
             folder_id = folder['id']
             logger.info(f"Created folder: {folder_name}")
-        
+
         self._folder_cache[cache_key] = folder_id
         return folder_id
-    
-    def setup_folder_structure(self, year: Optional[int] = None, family_members: Optional[List[str]] = None) -> Dict[str, str]:
+
+    def setup_folder_structure(self, year: int | None = None, family_members: list[str] | None = None) -> dict[str, str]:
         year = year or datetime.now().year
         family_members = family_members or ["Ming", "Vanessa", "Maxwell"]
         folder_ids = {}
@@ -133,8 +132,8 @@ class GDriveClient:
 
         logger.info(f"Folder structure setup complete: {len(folder_ids)} folders")
         return folder_ids
-    
-    def upload_file(self, local_path: Path, folder_id: str, new_name: Optional[str] = None) -> DriveFile:
+
+    def upload_file(self, local_path: Path, folder_id: str, new_name: str | None = None) -> DriveFile:
         service = self._get_service()
         local_path = Path(local_path)
         filename = new_name or local_path.name
@@ -183,11 +182,11 @@ class GDriveClient:
             created_time=datetime.fromisoformat(file['createdTime'].replace('Z', '+00:00')),
             modified_time=datetime.fromisoformat(file['modifiedTime'].replace('Z', '+00:00'))
         )
-    
+
     def get_folder_path(self, category: str, patient: str, year: int = None) -> str:
         year = year or datetime.now().year
         return f"{self.root_folder_name}/{year}/{category.title()}/{patient}"
-    
+
     def get_folder_id_for_receipt(self, category: str, patient: str, year: int = None) -> str:
         year = year or datetime.now().year
         root_id = self.get_or_create_folder(self.root_folder_name)

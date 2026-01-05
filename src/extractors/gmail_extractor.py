@@ -1,10 +1,9 @@
 """Gmail Extractor for HSA Receipt System - extracts medical emails and attachments"""
 import base64
-from pathlib import Path
-from datetime import datetime
-from typing import List, Optional
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +28,8 @@ class EmailMessage:
     date: datetime
     body_text: str
     body_html: str
-    attachments: List[EmailAttachment]
-    labels: List[str]
+    attachments: list[EmailAttachment]
+    labels: list[str]
 
 
 class GmailExtractor:
@@ -60,76 +59,76 @@ class GmailExtractor:
         'contact lens', 'reading glasses', 'sunscreen spf',
         'pain relief', 'allergy', 'cold', 'flu', 'cough',
     ]
-    
+
     SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-    
+
     def __init__(self, credentials_file: str, token_file: str, user_email: str = "me"):
         self.credentials_file = Path(credentials_file)
         self.token_file = Path(token_file)
         self.user_email = user_email
         self._service = None
-        
+
     def _get_service(self):
         if self._service is not None:
             return self._service
-            
+
+        from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
         from googleapiclient.discovery import build
-        
+
         creds = None
         if self.token_file.exists():
             creds = Credentials.from_authorized_user_file(str(self.token_file), self.SCOPES)
-        
+
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(str(self.credentials_file), self.SCOPES)
                 creds = flow.run_local_server(port=0)
-            
+
             self.token_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.token_file, 'w') as f:
                 f.write(creds.to_json())
-        
+
         self._service = build('gmail', 'v1', credentials=creds)
         return self._service
-    
-    def search_messages(self, query: str, max_results: int = 100, after_date: Optional[datetime] = None) -> List[str]:
+
+    def search_messages(self, query: str, max_results: int = 100, after_date: datetime | None = None) -> list[str]:
         service = self._get_service()
         if after_date:
             query = f"{query} after:{after_date.strftime('%Y/%m/%d')}"
-        
+
         message_ids = []
         page_token = None
-        
+
         while len(message_ids) < max_results:
             results = service.users().messages().list(
                 userId=self.user_email, q=query,
                 maxResults=min(100, max_results - len(message_ids)),
                 pageToken=page_token
             ).execute()
-            
+
             message_ids.extend([m['id'] for m in results.get('messages', [])])
             page_token = results.get('nextPageToken')
             if not page_token:
                 break
-        
+
         return message_ids
-    
-    def extract_medical_emails(self, after_date: Optional[datetime] = None, output_dir: Optional[Path] = None) -> List[EmailMessage]:
+
+    def extract_medical_emails(self, after_date: datetime | None = None, output_dir: Path | None = None) -> list[EmailMessage]:
         all_messages = []
         seen_ids = set()
-        
+
         for query in self.MEDICAL_QUERIES:
             message_ids = self.search_messages(query=query, max_results=50, after_date=after_date)
-            
+
             for msg_id in message_ids:
                 if msg_id in seen_ids:
                     continue
                 seen_ids.add(msg_id)
-                
+
                 try:
                     msg = self.get_message(msg_id)
                     all_messages.append(msg)
@@ -137,13 +136,13 @@ class GmailExtractor:
                         self._save_attachments(msg.attachments, output_dir)
                 except Exception as e:
                     logger.error(f"Error processing message {msg_id}: {e}")
-        
+
         logger.info(f"Extracted {len(all_messages)} unique medical emails")
         return all_messages
 
     def extract_amazon_orders(
-        self, after_date: Optional[datetime] = None, hsa_only: bool = True
-    ) -> List[EmailMessage]:
+        self, after_date: datetime | None = None, hsa_only: bool = True
+    ) -> list[EmailMessage]:
         """
         Extract Amazon order emails, optionally filtering for HSA-eligible items.
 
@@ -182,7 +181,7 @@ class GmailExtractor:
         logger.info(f"Extracted {len(all_messages)} Amazon order emails")
         return all_messages
 
-    def extract_order_id_from_amazon_email(self, msg: EmailMessage) -> Optional[str]:
+    def extract_order_id_from_amazon_email(self, msg: EmailMessage) -> str | None:
         """Extract Amazon order ID from email subject or body."""
         import re
 
@@ -205,7 +204,7 @@ class GmailExtractor:
         """Generate Amazon invoice URL for an order ID."""
         # This URL requires authentication - user must be logged into Amazon
         return f"https://www.amazon.com/gp/css/summary/print.html/ref=ppx_od_dt_b_invoice?ie=UTF8&orderID={order_id}"
-    
+
     def get_message(self, message_id: str) -> EmailMessage:
         service = self._get_service()
         msg = service.users().messages().get(userId=self.user_email, id=message_id, format='full').execute()
@@ -280,7 +279,7 @@ class GmailExtractor:
 
         return body_text, body_html, attachments
 
-    def _get_attachment(self, message_id: str, attachment_id: str) -> Optional[bytes]:
+    def _get_attachment(self, message_id: str, attachment_id: str) -> bytes | None:
         """Fetch attachment data by ID."""
         try:
             service = self._get_service()
@@ -291,8 +290,8 @@ class GmailExtractor:
         except Exception as e:
             logger.error(f"Failed to get attachment {attachment_id}: {e}")
             return None
-    
-    def _save_attachments(self, attachments: List[EmailAttachment], output_dir: Path):
+
+    def _save_attachments(self, attachments: list[EmailAttachment], output_dir: Path):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         for att in attachments:

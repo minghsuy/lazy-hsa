@@ -194,10 +194,7 @@ class HSAReceiptPipeline:
             return None
 
         # Apply patient hint if provided (always override), otherwise normalize extracted name
-        if patient_hint:
-            folder_patient = patient_hint
-        else:
-            folder_patient = self._normalize_patient_name(extraction.patient_name)
+        folder_patient = patient_hint or self._normalize_patient_name(extraction.patient_name)
 
         # Update extraction with normalized patient name for folder/filename
         if folder_patient != extraction.patient_name:
@@ -483,9 +480,9 @@ try:
     @click.pass_context
     def email_scan(ctx, since, dry_run, output_dir):
         """Scan Gmail for medical emails and process attachments."""
-        from extractors.gmail_extractor import GmailExtractor
         from pathlib import Path
-        import tempfile
+
+        from extractors.gmail_extractor import GmailExtractor
 
         pipeline = ctx.obj["pipeline"]
         config = pipeline.config
@@ -495,13 +492,8 @@ try:
         creds_file = gdrive_config.get("credentials_file", "config/credentials/gdrive_credentials.json")
         token_file = "config/credentials/gmail_token.json"
 
-        # Parse since date
-        since_date = None
-        if since:
-            since_date = datetime.strptime(since, "%Y-%m-%d")
-        else:
-            # Default: HSA start date
-            since_date = pipeline.hsa_start_date
+        # Parse since date (default: HSA start date)
+        since_date = datetime.strptime(since, "%Y-%m-%d") if since else pipeline.hsa_start_date
 
         console.print(f"[cyan]Scanning emails since {since_date.strftime('%Y-%m-%d')}...[/cyan]")
 
@@ -555,32 +547,39 @@ try:
     @cli.command("inbox")
     @click.option("--watch", is_flag=True, help="Continuously watch for new files")
     @click.option("--interval", default=60, help="Polling interval in seconds (with --watch)")
+    @click.option("--dry-run", is_flag=True, help="Preview extraction without uploading or recording")
     @click.pass_context
-    def inbox(ctx, watch, interval):
+    def inbox(ctx, watch, interval, dry_run):
         """Process files from Google Drive _Inbox folder.
 
         Drop receipt files into the _Inbox folder in Google Drive,
         and this command will process them automatically.
+
+        Use --dry-run to test extraction on new receipt types without
+        modifying Drive folders or the tracking spreadsheet.
         """
         from watchers.inbox_watcher import DriveInboxWatcher
 
         pipeline = ctx.obj["pipeline"]
 
         def process_file(path, patient_hint=None):
-            return pipeline.process_file(path, patient_hint=patient_hint, dry_run=False)
+            return pipeline.process_file(path, patient_hint=patient_hint, dry_run=dry_run)
 
         watcher = DriveInboxWatcher(
             gdrive_client=pipeline.gdrive,
             process_callback=process_file,
             family_names=pipeline.family_names,
+            dry_run=dry_run,
         )
 
+        mode_label = "[yellow][DRY RUN][/yellow] " if dry_run else ""
+
         if watch:
-            console.print(f"[cyan]Watching _Inbox folder (polling every {interval}s)...[/cyan]")
+            console.print(f"{mode_label}[cyan]Watching _Inbox folder (polling every {interval}s)...[/cyan]")
             console.print("[yellow]Press Ctrl+C to stop[/yellow]\n")
             watcher.watch(interval=interval)
         else:
-            console.print("[cyan]Checking _Inbox folder...[/cyan]\n")
+            console.print(f"{mode_label}[cyan]Checking _Inbox folder...[/cyan]\n")
             results = watcher.poll()
 
             if not results:
@@ -591,10 +590,22 @@ try:
                         console.print(f"[red]ERROR[/red] {r['file']}: {r['error']}")
                     else:
                         result = r["result"]
+                        ext = result["extraction"]
                         status = "[green]OK[/green]" if not result.get("needs_review") else "[yellow]REVIEW[/yellow]"
-                        console.print(f"{status} {r['file']}: ${result['extraction']['patient_responsibility']:.2f}")
+                        console.print(f"{status} {r['file']}:")
+                        console.print(f"    Provider: {ext['provider_name']}")
+                        console.print(f"    Patient: {ext['patient_name']}")
+                        console.print(f"    Date: {ext['service_date']}")
+                        console.print(f"    Amount: ${ext['patient_responsibility']:.2f}")
+                        console.print(f"    Category: {ext['category']}")
+                        console.print(f"    Confidence: {ext['confidence_score']:.0%}")
+                        if ext.get("notes"):
+                            console.print(f"    Notes: {ext['notes']}")
 
-                console.print(f"\n[green]Processed {len(results)} files[/green]")
+                if dry_run:
+                    console.print(f"\n[yellow]Dry run complete - {len(results)} files previewed (not committed)[/yellow]")
+                else:
+                    console.print(f"\n[green]Processed {len(results)} files[/green]")
 
 except ImportError:
     # Fallback if click/rich not installed

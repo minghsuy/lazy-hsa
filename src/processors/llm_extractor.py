@@ -4,14 +4,16 @@ Uses vision-enabled LLM (Mistral Small 3) for direct image-to-JSON extraction
 """
 
 import base64
+import contextlib
 import json
+import logging
 import re
+import tempfile
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +75,10 @@ Extract the following as a JSON object:
   "service_date": "YYYY-MM-DD format or null if unclear",
   "service_type": "Brief description of service or product",
   "patient_name": "MUST be one of: {family_members} - match based on recipient/patient name in document",
-  "billed_amount": 0.00,
+  "eligible_subtotal": 0.00,
+  "receipt_tax": 0.00,
+  "receipt_taxable_amount": 0.00,
   "insurance_paid": 0.00,
-  "patient_responsibility": 0.00,
   "hsa_eligible": true,
   "category": "medical|dental|vision|pharmacy",
   "document_type": "receipt|eob|statement|claim|prescription",
@@ -83,20 +86,185 @@ Extract the following as a JSON object:
   "notes": "Any uncertainties or important details"
 }}
 
-Rules:
+CRITICAL - Recognize the store/provider from the image and apply these rules:
+
+RETAIL STORES (Costco, CVS, Walgreens, Target, Walmart, Amazon):
+- STRICT RULE: ONLY include items with VISIBLE "F" or "*" marker!
+- The "F" marker appears in a dedicated COLUMN between price and "Dept" - look carefully!
+- Items WITHOUT the "F" marker (like ZIPLOC, supplements) must be EXCLUDED
+- Example from Costco receipt:
+  * "SALONPAS 140    15.99 A  F  Dept" ← HAS "F" marker = INCLUDE
+  * "ZIPLOC QUART    12.99 A     Dept" ← NO "F" marker = EXCLUDE
+  * "NM COQ 140CT    37.99 A     Dept" ← NO "F" marker = EXCLUDE
+- Rows starting with "SC" are discounts/coupons - IGNORE completely
+- DO NOT assume eligibility based on product type - ONLY the "F" marker matters
+- service_type: List EACH eligible item with quantity and unit price (e.g., "4x Salonpas @$15.99")
+- DO NOT CALCULATE - just extract these raw values:
+  * eligible_subtotal = sum of ONLY the FSA/HSA marked item prices (pre-tax)
+  * receipt_tax = the TAX amount shown on receipt (e.g., "TAX 18.28" → 18.28)
+  * receipt_taxable_amount = the taxable subtotal shown (e.g., "Taxable Amount 200.29" → 200.29)
+- insurance_paid = 0 for retail purchases
+- category = "pharmacy"
+- If NO marked items found, set hsa_eligible=false and eligible_subtotal=0
+
+HEALTHCARE EOBs (Sutter, Kaiser, Delta Dental, VSP, Anthem, Blue Cross):
+- Look for "Patient Responsibility", "Member Pays", "Your Cost", "Amount Due"
+- patient_responsibility = amount YOU owe after insurance
+- insurance_paid = what the plan/insurance paid
+- category based on provider type (medical/dental/vision)
+
+General Rules:
 - patient_name MUST be exactly one of: {family_members}
 - Match the patient/recipient in the document to the closest family member name
 - If unclear, default to the first family member ({default_patient})
-- patient_responsibility is the amount paid (retail) or owed after insurance (EOBs)
-- Respond with ONLY the JSON object, no other text"""
+- Respond with ONLY the JSON object, no other text
+{provider_skill}"""
 
 
-def get_extraction_prompt(family_members: list[str] | None = None) -> str:
-    """Generate extraction prompt with family member names."""
+# Provider-specific extraction skills (activated based on filename/content hints)
+PROVIDER_SKILLS = {
+    "costco": """
+COSTCO RECEIPT RULES:
+- Look for "F" marker in column after price - ONLY these items are FSA-eligible
+- Format: "ITEM_NAME    PRICE A  F  Dept" means FSA-eligible
+- Format: "ITEM_NAME    PRICE A     Dept" means NOT eligible (no F)
+- Rows starting with "SC" are discounts - IGNORE them
+- provider_name: "Costco"
+- eligible_subtotal: sum ONLY items with F marker
+- receipt_tax: the TAX amount shown
+- receipt_taxable_amount: the "Taxable Amount" shown
+- document_type: "receipt"
+- category: "pharmacy"
+
+Example: If you see 4 lines of "SALONPAS 140  15.99 A F Dept" → eligible_subtotal = 63.96
+""",
+
+    "cvs": """
+CVS-SPECIFIC RULES:
+- Look for FSA/HSA ELIGIBLE label on items
+- Rx number indicates prescription (hsa_eligible=true)
+- Include copay as patient_responsibility
+- For OTC items, only include if marked FSA eligible
+- category = "pharmacy"
+""",
+
+    "walgreens": """
+WALGREENS-SPECIFIC RULES:
+- Look for "FSA" or "HSA" markers next to eligible items
+- Prescription copays are always HSA eligible
+- For OTC items, only include if marked FSA/HSA eligible
+- category = "pharmacy"
+""",
+
+    "amazon": """
+AMAZON ORDER RULES:
+- patient_name: Extract from "Ship to:" name
+- service_date: Use "Order placed" date (not delivery date)
+- service_type: Product name from the order
+- DO NOT CALCULATE - read these values directly from the receipt:
+  * eligible_subtotal: Use "Grand Total" amount (this already includes tax)
+  * receipt_tax: 0 (tax is already in Grand Total)
+  * receipt_taxable_amount: 0 (not needed - Grand Total is final)
+- If "FSA or HSA eligible: $X.XX" line exists, that IS the amount to use
+- provider_name: "Amazon"
+- category: "pharmacy"
+- document_type: "receipt"
+""",
+
+    "sutter": """
+SUTTER HEALTH-SPECIFIC RULES:
+- This is likely a hospital/medical bill or EOB
+- Look for "Patient Responsibility" or "Amount Due" for patient_responsibility
+- Look for "Insurance Payment" or "Plan Paid" for insurance_paid
+- service_date is the "Date of Service"
+- category = "medical"
+- document_type is likely "statement" or "eob"
+""",
+
+    "kaiser": """
+KAISER PERMANENTE-SPECIFIC RULES:
+- Look for "Member Responsibility" for patient_responsibility
+- Look for "Plan Paid" for insurance_paid
+- May have multiple service lines - use earliest date
+- category = "medical"
+""",
+
+    "delta_dental": """
+DELTA DENTAL-SPECIFIC RULES:
+- This is a dental EOB
+- Look for "Patient Pays" for patient_responsibility
+- Look for "Benefit Paid" for insurance_paid
+- category = "dental"
+- document_type = "eob"
+""",
+
+    "vsp": """
+VSP VISION-SPECIFIC RULES:
+- This is a vision EOB or receipt
+- Look for "Your Cost" or "Member Pays" for patient_responsibility
+- category = "vision"
+""",
+}
+
+
+def detect_provider_skill(filename: str, hints: list[str] | None = None) -> str | None:
+    """Detect which provider skill to apply based on filename or hints.
+
+    Args:
+        filename: Name of the file being processed
+        hints: Optional list of text hints (e.g., from OCR preview)
+
+    Returns:
+        Provider skill key if detected, None otherwise
+    """
+    text_to_check = filename.lower()
+    if hints:
+        text_to_check += " " + " ".join(h.lower() for h in hints)
+
+    # Check for provider matches
+    provider_patterns = {
+        "costco": ["costco", "store 423", "store423"],  # Costco store numbers
+        "cvs": ["cvs"],
+        "walgreens": ["walgreens", "walgreen"],
+        "amazon": ["amazon"],
+        "sutter": ["sutter", "pamf", "palo alto medical"],
+        "kaiser": ["kaiser"],
+        "delta_dental": ["delta dental", "deltadental"],
+        "vsp": ["vsp", "vision service plan"],
+    }
+
+    for skill_key, patterns in provider_patterns.items():
+        for pattern in patterns:
+            if pattern in text_to_check:
+                return skill_key
+
+    return None
+
+
+def get_extraction_prompt(
+    family_members: list[str] | None = None,
+    provider_skill: str | None = None,
+) -> str:
+    """Generate extraction prompt with family member names and optional provider skill.
+
+    Args:
+        family_members: List of family member names
+        provider_skill: Optional provider skill key (e.g., "costco", "cvs")
+
+    Returns:
+        Complete extraction prompt
+    """
     family_members = family_members or ["Ming", "Vanessa", "Maxwell"]
+
+    skill_text = ""
+    if provider_skill and provider_skill in PROVIDER_SKILLS:
+        skill_text = PROVIDER_SKILLS[provider_skill]
+        logger.info(f"Applying provider skill: {provider_skill}")
+
     return EXTRACTION_PROMPT_TEMPLATE.format(
         family_members=", ".join(family_members),
         default_patient=family_members[0],
+        provider_skill=skill_text,
     )
 
 
@@ -117,7 +285,7 @@ class VisionExtractor:
         self.temperature = temperature
         self.family_members = family_members or ["Ming", "Vanessa", "Maxwell"]
         self._client = None
-        self._prompt = get_extraction_prompt(self.family_members)
+        self._current_provider_skill = None  # Set per-file extraction
 
     def _init_client(self):
         if self._client is None:
@@ -129,8 +297,8 @@ class VisionExtractor:
                     api_key="ollama",  # Ollama doesn't need real key
                 )
                 logger.info(f"Vision LLM client initialized: {self.api_base}, model: {self.model}")
-            except ImportError:
-                raise ImportError("openai package not installed. Run: uv add openai")
+            except ImportError as err:
+                raise ImportError("openai package not installed. Run: uv add openai") from err
         return self._client
 
     def _encode_image(self, image_path: Path) -> tuple[str, str]:
@@ -154,23 +322,31 @@ class VisionExtractor:
         """Convert PDF pages to images for vision processing."""
         try:
             from pdf2image import convert_from_path
-        except ImportError:
-            raise ImportError("pdf2image not installed. Run: uv add pdf2image")
+        except ImportError as err:
+            raise ImportError("pdf2image not installed. Run: uv add pdf2image") from err
 
         images = convert_from_path(str(pdf_path), dpi=200)
         image_paths = []
 
         for i, image in enumerate(images):
-            temp_path = Path(f"/tmp/hsa_receipt_page_{i}.png")
+            temp_path = Path(tempfile.gettempdir()) / f"hsa_receipt_page_{i}.png"
             image.save(temp_path, "PNG")
             image_paths.append(temp_path)
 
         return image_paths
 
+    def _get_prompt(self) -> str:
+        """Get the extraction prompt, including any active provider skill."""
+        return get_extraction_prompt(
+            family_members=self.family_members,
+            provider_skill=self._current_provider_skill,
+        )
+
     def extract_from_image(self, image_path: Path) -> ExtractedReceipt:
         """Extract receipt data from a single image."""
         client = self._init_client()
         image_data, mime_type = self._encode_image(image_path)
+        prompt = self._get_prompt()
 
         try:
             response = client.chat.completions.create(
@@ -179,7 +355,7 @@ class VisionExtractor:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": self._prompt},
+                            {"type": "text", "text": prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
@@ -224,38 +400,68 @@ class VisionExtractor:
         finally:
             # Cleanup temp images
             for img_path in image_paths:
-                try:
+                with contextlib.suppress(OSError):
                     img_path.unlink()
-                except OSError:
-                    pass
 
-    def extract(self, file_path: str | Path) -> ExtractedReceipt:
-        """Extract receipt data from file (image or PDF)."""
+    def extract(self, file_path: str | Path, provider_hint: str | None = None) -> ExtractedReceipt:
+        """Extract receipt data from file (image or PDF).
+
+        Args:
+            file_path: Path to the receipt file
+            provider_hint: Optional hint for provider skill detection (e.g., "costco")
+        """
         file_path = Path(file_path)
 
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
+        # Detect provider skill from filename (or explicit hint)
+        hints = [provider_hint] if provider_hint else None
+        self._current_provider_skill = detect_provider_skill(file_path.name, hints)
+        if self._current_provider_skill:
+            logger.info(f"Detected provider skill: {self._current_provider_skill}")
+
         suffix = file_path.suffix.lower()
 
-        if suffix == ".pdf":
-            return self.extract_from_pdf(file_path)
-        elif suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".tiff", ".bmp"}:
-            # Convert non-standard formats to PNG first
-            if suffix in {".tiff", ".bmp"}:
-                from PIL import Image
+        try:
+            if suffix == ".pdf":
+                return self.extract_from_pdf(file_path)
+            elif suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".tiff", ".bmp", ".heic", ".heif"}:
+                # Convert non-standard formats to PNG first
+                if suffix in {".tiff", ".bmp"}:
+                    from PIL import Image
 
-                img = Image.open(file_path)
-                temp_path = Path(f"/tmp/hsa_receipt_converted.png")
-                img.save(temp_path, "PNG")
-                try:
-                    return self.extract_from_image(temp_path)
-                finally:
-                    temp_path.unlink(missing_ok=True)
+                    img = Image.open(file_path)
+                    temp_path = Path(tempfile.gettempdir()) / "hsa_receipt_converted.png"
+                    img.save(temp_path, "PNG")
+                    try:
+                        return self.extract_from_image(temp_path)
+                    finally:
+                        temp_path.unlink(missing_ok=True)
+                elif suffix in {".heic", ".heif"}:
+                    # HEIC/HEIF requires pillow-heif plugin
+                    try:
+                        import pillow_heif
+                        pillow_heif.register_heif_opener()
+                    except ImportError as err:
+                        raise ImportError("pillow-heif not installed. Run: uv add pillow-heif") from err
+
+                    from PIL import Image
+                    img = Image.open(file_path)
+                    temp_path = Path(tempfile.gettempdir()) / "hsa_receipt_converted.png"
+                    img.save(temp_path, "PNG")
+                    logger.info("Converted HEIC to PNG for processing")
+                    try:
+                        return self.extract_from_image(temp_path)
+                    finally:
+                        temp_path.unlink(missing_ok=True)
+                else:
+                    return self.extract_from_image(file_path)
             else:
-                return self.extract_from_image(file_path)
-        else:
-            raise ValueError(f"Unsupported file type: {suffix}")
+                raise ValueError(f"Unsupported file type: {suffix}")
+        finally:
+            # Reset provider skill after extraction
+            self._current_provider_skill = None
 
     def _parse_response(self, response: str) -> dict[str, Any]:
         """Parse LLM response to extract JSON."""
@@ -271,7 +477,11 @@ class VisionExtractor:
         response = response.strip()
 
         try:
-            return json.loads(response)
+            parsed = json.loads(response)
+            # Handle case where LLM returns array instead of object
+            if isinstance(parsed, list) and len(parsed) > 0:
+                parsed = parsed[0]
+            return parsed if isinstance(parsed, dict) else {}
         except json.JSONDecodeError:
             # Try to find JSON object in response
             match = re.search(r"\{[^{}]*\}", response, re.DOTALL)
@@ -284,20 +494,55 @@ class VisionExtractor:
             return {}
 
     def _build_receipt(self, parsed: dict[str, Any]) -> ExtractedReceipt:
-        """Build ExtractedReceipt from parsed JSON."""
+        """Build ExtractedReceipt from parsed JSON, calculating tax in Python."""
+        # Extract raw values
+        eligible_subtotal = float(parsed.get("eligible_subtotal") or 0)
+        receipt_tax = float(parsed.get("receipt_tax") or 0)
+        receipt_taxable_amount = float(parsed.get("receipt_taxable_amount") or 0)
+        insurance_paid = float(parsed.get("insurance_paid") or 0)
+
+        # Calculate tax on eligible items (Python does the math, not LLM)
+        tax_on_eligible = 0.0
+        tax_rate = 0.0
+        if eligible_subtotal > 0 and receipt_taxable_amount > 0 and receipt_tax > 0:
+            tax_rate = receipt_tax / receipt_taxable_amount
+            tax_on_eligible = round(eligible_subtotal * tax_rate, 2)
+
+        # For retail: patient_responsibility = eligible items + tax
+        # For EOBs: use the extracted patient_responsibility directly
+        document_type = parsed.get("document_type") or "unknown"
+        if document_type in ("receipt", "prescription") and eligible_subtotal > 0:
+            patient_responsibility = eligible_subtotal + tax_on_eligible
+            billed_amount = eligible_subtotal
+        else:
+            # EOB or other - use extracted values
+            patient_responsibility = float(parsed.get("patient_responsibility") or eligible_subtotal)
+            billed_amount = float(parsed.get("billed_amount") or eligible_subtotal)
+
+        # Build notes with tax calculation if applicable
+        notes = parsed.get("notes") or ""
+        if tax_on_eligible > 0:
+            tax_note = f"Tax rate {tax_rate*100:.3f}%, tax on eligible items: ${tax_on_eligible:.2f}"
+            notes = f"{tax_note}. {notes}" if notes else tax_note
+
+        # Handle service_type as string (LLM sometimes returns a list)
+        service_type = parsed.get("service_type") or "Unknown Service"
+        if isinstance(service_type, list):
+            service_type = ", ".join(str(s) for s in service_type)
+
         return ExtractedReceipt(
-            provider_name=parsed.get("provider_name", "Unknown"),
+            provider_name=parsed.get("provider_name") or "Unknown",
             service_date=parsed.get("service_date"),
-            service_type=parsed.get("service_type", "Unknown Service"),
-            patient_name=parsed.get("patient_name", "Unknown"),
-            billed_amount=float(parsed.get("billed_amount", 0)),
-            insurance_paid=float(parsed.get("insurance_paid", 0)),
-            patient_responsibility=float(parsed.get("patient_responsibility", 0)),
+            service_type=service_type,
+            patient_name=parsed.get("patient_name") or "Unknown",
+            billed_amount=billed_amount,
+            insurance_paid=insurance_paid,
+            patient_responsibility=patient_responsibility,
             hsa_eligible=bool(parsed.get("hsa_eligible", True)),
-            category=parsed.get("category", "unknown"),
-            document_type=parsed.get("document_type", "unknown"),
-            confidence_score=float(parsed.get("confidence_score", 0.5)),
-            notes=parsed.get("notes", ""),
+            category=parsed.get("category") or "unknown",
+            document_type=document_type,
+            confidence_score=float(parsed.get("confidence_score") or 0.5),
+            notes=notes,
             raw_extraction=parsed,
         )
 

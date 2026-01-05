@@ -1,8 +1,12 @@
 """Google Sheets Client for HSA Receipt System - manages tracking spreadsheet"""
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass
+import contextlib
 import logging
+from dataclasses import dataclass
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from processors.llm_extractor import ExtractedReceipt
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +72,12 @@ class GSheetsClient:
         if self._client is not None:
             return self._client
 
-        import gspread
         from pathlib import Path
+
+        import gspread
+        from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
 
         token_path = Path(self.token_file)
         creds = None
@@ -93,33 +98,33 @@ class GSheetsClient:
 
         self._client = gspread.authorize(creds)
         return self._client
-    
+
     def _get_worksheet(self):
         if self._worksheet is not None:
             return self._worksheet
-            
+
         client = self._get_client()
-        
+
         try:
             self._spreadsheet = client.open(self.spreadsheet_name)
         except Exception:
             self._spreadsheet = client.create(self.spreadsheet_name)
             logger.info(f"Created spreadsheet: {self.spreadsheet_name}")
-        
+
         try:
             self._worksheet = self._spreadsheet.worksheet(self.worksheet_name)
         except Exception:
             self._worksheet = self._spreadsheet.add_worksheet(title=self.worksheet_name, rows=1000, cols=len(self.HEADERS))
             self._worksheet.update('A1', [self.HEADERS])
             logger.info(f"Created worksheet: {self.worksheet_name}")
-        
+
         return self._worksheet
-    
+
     def add_record(self, record: ReceiptRecord) -> int:
         worksheet = self._get_worksheet()
         all_values = worksheet.get_all_values()
         next_id = len(all_values)
-        
+
         row = [
             next_id, record.date_added or datetime.now().strftime("%Y-%m-%d"),
             record.service_date or "", record.provider, record.service_type,
@@ -129,12 +134,12 @@ class GSheetsClient:
             "Yes" if record.reimbursed else "No", record.reimbursement_date or "",
             record.reimbursement_amount or 0, f"{record.confidence:.0%}", record.notes
         ]
-        
+
         worksheet.append_row(row, value_input_option='USER_ENTERED')
         logger.info(f"Added record ID {next_id}: {record.provider}")
         return next_id
-    
-    def get_all_records(self) -> List[Dict[str, Any]]:
+
+    def get_all_records(self) -> list[dict[str, Any]]:
         worksheet = self._get_worksheet()
         return worksheet.get_all_records()
 
@@ -144,7 +149,7 @@ class GSheetsClient:
         service_date: str,
         amount: float,
         tolerance: float = 0.01,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Find potential duplicate records by matching provider, date, and amount.
 
         This helps detect when both a hospital bill and EOB are uploaded for the
@@ -184,42 +189,40 @@ class GSheetsClient:
             matches.append(record)
 
         return matches
-    
+
     def get_unreimbursed_total(self) -> float:
         records = self.get_all_records()
         total = 0.0
         for record in records:
             if record.get("HSA Eligible") == "Yes" and record.get("Reimbursed") != "Yes":
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     total += float(record.get("Patient Responsibility", 0))
-                except (ValueError, TypeError):
-                    pass
         return total
-    
-    def get_summary_by_year(self) -> Dict[int, Dict[str, float]]:
+
+    def get_summary_by_year(self) -> dict[int, dict[str, float]]:
         records = self.get_all_records()
         summary = {}
-        
+
         for record in records:
             try:
                 service_date = record.get("Service Date", "")
                 if not service_date:
                     continue
                 year = int(service_date[:4])
-                
+
                 if year not in summary:
                     summary[year] = {"total_billed": 0, "total_insurance": 0, "total_responsibility": 0, "total_reimbursed": 0, "count": 0}
-                
+
                 summary[year]["count"] += 1
                 summary[year]["total_billed"] += float(record.get("Billed Amount", 0) or 0)
                 summary[year]["total_insurance"] += float(record.get("Insurance Paid", 0) or 0)
                 summary[year]["total_responsibility"] += float(record.get("Patient Responsibility", 0) or 0)
-                
+
                 if record.get("Reimbursed") == "Yes":
                     summary[year]["total_reimbursed"] += float(record.get("Reimbursement Amount", 0) or 0)
             except (ValueError, TypeError):
                 pass
-        
+
         return summary
 
 
