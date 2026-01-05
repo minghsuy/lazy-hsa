@@ -111,14 +111,27 @@ Provider-specific extraction prompts activate automatically based on filename pa
 
 | Provider | Triggers | Special Handling |
 |----------|----------|------------------|
-| **Costco** | "costco" in filename | Looks for FSA star (*) markers, sums only eligible items |
-| **CVS** | "cvs" in filename | FSA/HSA labels, Rx numbers for prescriptions |
+| **Costco** | "costco", "store 423" | Looks for "F" column marker, sums only F-marked items |
+| **CVS** | "cvs" | FSA/HSA labels, Rx numbers for prescriptions |
 | **Walgreens** | "walgreens" | FSA/HSA markers, copay extraction |
-| **Amazon** | "amazon" | Ship-to address for patient, HSA Store items |
+| **Amazon** | "amazon" | Extracts Grand Total directly (includes tax) |
 | **Sutter** | "sutter", "pamf" | Hospital EOB format, Patient Responsibility field |
 | **Kaiser** | "kaiser" | Member Responsibility, Plan Paid fields |
 | **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" | Vision EOB format |
+
+### Tax Calculation (Retail Receipts)
+For retail receipts (Costco, CVS, etc.), the system:
+1. LLM extracts: `eligible_subtotal`, `receipt_tax`, `receipt_taxable_amount`
+2. Python calculates: `tax_rate = receipt_tax / receipt_taxable_amount`
+3. Python calculates: `tax_on_eligible = eligible_subtotal * tax_rate`
+4. Final amount: `patient_responsibility = eligible_subtotal + tax_on_eligible`
+
+IRS allows HSA reimbursement of sales tax on eligible items.
+
+### Supported Image Formats
+- PDF, PNG, JPG, JPEG, GIF, WEBP, TIFF, BMP
+- **HEIC/HEIF** (iPhone photos) - converted to PNG before processing
 
 ### Adding New Provider Skills
 1. Add skill to `PROVIDER_SKILLS` dict in `llm_extractor.py`
