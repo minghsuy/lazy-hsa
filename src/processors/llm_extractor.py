@@ -17,6 +17,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Extraction constants
+MIN_PAGE_TEXT_LENGTH = 50  # Skip pages with less usable text
+MAX_FALLBACK_PAGES = 4     # Max pages to check in image-only fallback
+MAX_PDF_PAGES = 5          # Max pages to process from PDFs
+
 
 class Category(Enum):
     MEDICAL = "medical"
@@ -353,14 +358,19 @@ class VisionExtractor:
 
         return image_data, mime_type
 
-    def _convert_pdf_to_images(self, pdf_path: Path) -> list[Path]:
-        """Convert PDF pages to images for vision processing."""
+    def _convert_pdf_to_images(self, pdf_path: Path, max_pages: int = MAX_PDF_PAGES) -> list[Path]:
+        """Convert PDF pages to images for vision processing.
+
+        Args:
+            pdf_path: Path to PDF file
+            max_pages: Maximum pages to convert (default MAX_PDF_PAGES, key info usually early)
+        """
         try:
             from pdf2image import convert_from_path
         except ImportError as err:
             raise ImportError("pdf2image not installed. Run: uv add pdf2image") from err
 
-        images = convert_from_path(str(pdf_path), dpi=200)
+        images = convert_from_path(str(pdf_path), dpi=200, last_page=max_pages)
         image_paths = []
 
         for i, image in enumerate(images):
@@ -372,18 +382,14 @@ class VisionExtractor:
 
     def _decode_cid_text(self, text: str) -> str:
         """Decode CID-encoded text like (cid:84)(cid:104) to actual characters."""
-        import re
-
         def decode_cid(match):
             try:
                 cid = int(match.group(1))
                 # CID values are typically ASCII codes
-                if 32 <= cid <= 126:  # Printable ASCII
-                    return chr(cid)
-                elif cid == 10:  # Newline
+                if cid == 10:  # Newline - check first
                     return '\n'
-                elif cid == 32:  # Space
-                    return ' '
+                elif 32 <= cid <= 126:  # Printable ASCII (includes space at 32)
+                    return chr(cid)
                 else:
                     return ''
             except (ValueError, OverflowError):
@@ -393,8 +399,6 @@ class VisionExtractor:
 
     def _clean_extracted_text(self, text: str) -> str:
         """Clean extracted PDF text by removing garbage and decoding CID."""
-        import re
-
         # First, decode CID-encoded text like (cid:84)(cid:104) -> "Th"
         text = self._decode_cid_text(text)
 
@@ -410,12 +414,12 @@ class VisionExtractor:
 
         return text.strip()
 
-    def _extract_text_with_pdfplumber(self, pdf_path: Path, max_pages: int = 5) -> str:
+    def _extract_text_with_pdfplumber(self, pdf_path: Path, max_pages: int = MAX_PDF_PAGES) -> str:
         """Extract text from PDF pages using pdfplumber.
 
         Args:
             pdf_path: Path to the PDF file
-            max_pages: Maximum pages to extract (default 5, key info is usually early)
+            max_pages: Maximum pages to extract (default MAX_PDF_PAGES, key info is usually early)
         """
         try:
             import pdfplumber
@@ -433,14 +437,17 @@ class VisionExtractor:
                     page_text = self._clean_extracted_text(page_text)
 
                     # Skip pages with very little usable text
-                    if len(page_text) > 50:
+                    if len(page_text) > MIN_PAGE_TEXT_LENGTH:
                         all_text.append(f"=== PAGE {i + 1} ===\n{page_text}")
 
             combined = "\n\n".join(all_text)
             logger.info(f"Extracted {len(combined)} chars from {len(all_text)} PDF pages (of {pages_to_process} processed)")
             return combined
+        except (OSError, ValueError) as e:
+            logger.warning(f"pdfplumber extraction failed ({type(e).__name__}): {e}")
+            return ""
         except Exception as e:
-            logger.warning(f"pdfplumber extraction failed: {e}")
+            logger.error(f"Unexpected pdfplumber error: {type(e).__name__}: {e}")
             return ""
 
     def _extract_with_text_and_image(
@@ -546,10 +553,10 @@ Analyze the text above to extract the JSON data. The text contains content from 
                 # If result looks incomplete (zero amount), try image-only on key pages
                 if result.patient_responsibility == 0 and len(image_paths) > 1:
                     logger.info("Zero amount from text extraction, trying image-only on key pages...")
-                    for img_path in image_paths[:4]:  # Check first 4 pages
+                    for img_path in image_paths[:MAX_FALLBACK_PAGES]:
                         alt_result = self.extract_from_image(img_path)
                         if alt_result.patient_responsibility > 0:
-                            # Merge: keep the better amount but preserve other data
+                            # Replace with image-only result if it found a valid amount
                             if alt_result.confidence_score >= result.confidence_score:
                                 result = alt_result
                             break
