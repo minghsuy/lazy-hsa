@@ -1,7 +1,7 @@
 # HSA Receipt Organization System - Comprehensive Guide
 
-**Last Updated:** January 3, 2026  
-**HSA Start Date:** January 1, 2026  
+**Last Updated:** January 3, 2026
+**HSA Start Date:** January 1, 2026
 **Provider:** Fidelity HSA
 
 ---
