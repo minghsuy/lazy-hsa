@@ -1,6 +1,5 @@
 """Google Sheets Client for HSA Receipt System - manages tracking spreadsheet"""
 
-import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +9,14 @@ if TYPE_CHECKING:
     from processors.llm_extractor import ExtractedReceipt
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Safely convert a value to float, returning default on failure."""
+    try:
+        return float(value or default)
+    except (ValueError, TypeError):
+        return default
 
 
 @dataclass
@@ -208,11 +215,8 @@ class GSheetsClient:
                 continue
 
             # Check amount match (within tolerance)
-            try:
-                record_amount = float(record.get("Patient Responsibility", 0))
-                if abs(record_amount - amount) > tolerance:
-                    continue
-            except (ValueError, TypeError):
+            record_amount = _safe_float(record.get("Patient Responsibility"))
+            if abs(record_amount - amount) > tolerance:
                 continue
 
             matches.append(record)
@@ -221,46 +225,44 @@ class GSheetsClient:
 
     def get_unreimbursed_total(self) -> float:
         records = self.get_all_records()
-        total = 0.0
-        for record in records:
-            if record.get("HSA Eligible") == "Yes" and record.get("Reimbursed") != "Yes":
-                with contextlib.suppress(ValueError, TypeError):
-                    total += float(record.get("Patient Responsibility", 0))
-        return total
+        return sum(
+            _safe_float(r.get("Patient Responsibility"))
+            for r in records
+            if r.get("HSA Eligible") == "Yes" and r.get("Reimbursed") != "Yes"
+        )
 
     def get_summary_by_year(self) -> dict[int, dict[str, float]]:
         records = self.get_all_records()
         summary = {}
 
         for record in records:
+            service_date = record.get("Service Date", "")
+            if not service_date:
+                continue
+
             try:
-                service_date = record.get("Service Date", "")
-                if not service_date:
-                    continue
                 year = int(service_date[:4])
-
-                if year not in summary:
-                    summary[year] = {
-                        "total_billed": 0,
-                        "total_insurance": 0,
-                        "total_responsibility": 0,
-                        "total_reimbursed": 0,
-                        "count": 0,
-                    }
-
-                summary[year]["count"] += 1
-                summary[year]["total_billed"] += float(record.get("Billed Amount", 0) or 0)
-                summary[year]["total_insurance"] += float(record.get("Insurance Paid", 0) or 0)
-                summary[year]["total_responsibility"] += float(
-                    record.get("Patient Responsibility", 0) or 0
-                )
-
-                if record.get("Reimbursed") == "Yes":
-                    summary[year]["total_reimbursed"] += float(
-                        record.get("Reimbursement Amount", 0) or 0
-                    )
             except (ValueError, TypeError):
-                pass
+                continue
+
+            if year not in summary:
+                summary[year] = {
+                    "total_billed": 0,
+                    "total_insurance": 0,
+                    "total_responsibility": 0,
+                    "total_reimbursed": 0,
+                    "count": 0,
+                }
+
+            summary[year]["count"] += 1
+            summary[year]["total_billed"] += _safe_float(record.get("Billed Amount"))
+            summary[year]["total_insurance"] += _safe_float(record.get("Insurance Paid"))
+            summary[year]["total_responsibility"] += _safe_float(
+                record.get("Patient Responsibility")
+            )
+
+            if record.get("Reimbursed") == "Yes":
+                summary[year]["total_reimbursed"] += _safe_float(record.get("Reimbursement Amount"))
 
         return summary
 

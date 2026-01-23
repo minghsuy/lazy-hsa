@@ -152,10 +152,9 @@ class HSAReceiptPipeline:
         """Classify extraction confidence level."""
         if score >= self.auto_threshold:
             return "high"
-        elif score >= self.review_threshold:
+        if score >= self.review_threshold:
             return "medium"
-        else:
-            return "low"
+        return "low"
 
     def process_file(
         self,
@@ -351,19 +350,11 @@ class HSAReceiptPipeline:
         return results
 
     def setup(self, family_members: list[str] | None = None):
-        """
-        Initial setup: create folder structure and spreadsheet.
-
-        Args:
-            family_members: List of family member names
-        """
+        """Initial setup: create folder structure and spreadsheet."""
         family = self.config.get("family", [])
-        if family_members:
-            family_names = family_members
-        elif family:
-            family_names = [m.get("name", "Unknown") for m in family]
-        else:
-            family_names = ["Ming", "Wife", "Son"]
+        family_names = family_members or (
+            [m.get("name", "Unknown") for m in family] if family else ["Ming", "Wife", "Son"]
+        )
 
         logger.info("Setting up HSA receipt system...")
 
