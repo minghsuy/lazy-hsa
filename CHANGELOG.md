@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-01-22
+
+### Added
+- **Multi-page PDF Support**: Extract text from all pages using pdfplumber
+  - Key financial data often spans multiple pages (e.g., Stanford statements)
+  - Falls back to image-only extraction if text extraction fails
+- **Stanford Health Care Provider Skill**: Specialized extraction for Stanford hospital statements
+  - Detects Patient Responsibility, Balance Due, Service Date
+  - Handles multi-page statement format
+- **CID Font Decoding**: Decode CID-encoded PDF fonts (e.g., `(cid:84)` → `T`)
+- **Text Cleaning**: Remove QR code binary patterns and hex data from extracted text
+- **Claude Code Review Workflow**: Automated PR code review via GitHub Actions
+
+### Changed
+- PDF image conversion now limits to first 5 pages (efficiency improvement)
+- Extraction constants extracted: `MIN_PAGE_TEXT_LENGTH`, `MAX_FALLBACK_PAGES`, `MAX_PDF_PAGES`
+- Improved exception handling in pdfplumber with specific error types
+
+### Fixed
+- CID decoder logic: check newline (cid=10) before printable ASCII range
+- Misleading comment in image fallback ("Merge" → "Replace")
+- Removed redundant `import re` statements inside methods
+
 ## [0.2.0] - 2026-01-04
 
 ### Added
