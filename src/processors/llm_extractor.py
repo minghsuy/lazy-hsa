@@ -357,12 +357,7 @@ class VisionExtractor:
         return image_data, mime_type
 
     def _convert_pdf_to_images(self, pdf_path: Path, max_pages: int = MAX_PDF_PAGES) -> list[Path]:
-        """Convert PDF pages to images for vision processing.
-
-        Args:
-            pdf_path: Path to PDF file
-            max_pages: Maximum pages to convert (default MAX_PDF_PAGES, key info usually early)
-        """
+        """Convert PDF pages to images for vision processing."""
         try:
             from pdf2image import convert_from_path
         except ImportError as err:
@@ -414,12 +409,7 @@ class VisionExtractor:
         return text.strip()
 
     def _extract_text_with_pdfplumber(self, pdf_path: Path, max_pages: int = MAX_PDF_PAGES) -> str:
-        """Extract text from PDF pages using pdfplumber.
-
-        Args:
-            pdf_path: Path to the PDF file
-            max_pages: Maximum pages to extract (default MAX_PDF_PAGES, key info is usually early)
-        """
+        """Extract text from PDF pages using pdfplumber."""
         try:
             import pdfplumber
         except ImportError as err:
@@ -430,12 +420,7 @@ class VisionExtractor:
             with pdfplumber.open(pdf_path) as pdf:
                 pages_to_process = min(len(pdf.pages), max_pages)
                 for i, page in enumerate(pdf.pages[:pages_to_process]):
-                    page_text = page.extract_text() or ""
-
-                    # Clean the extracted text
-                    page_text = self._clean_extracted_text(page_text)
-
-                    # Skip pages with very little usable text
+                    page_text = self._clean_extracted_text(page.extract_text() or "")
                     if len(page_text) > MIN_PAGE_TEXT_LENGTH:
                         all_text.append(f"=== PAGE {i + 1} ===\n{page_text}")
 
@@ -617,56 +602,40 @@ Analyze the text above to extract the JSON data. The text contains content from 
         try:
             if suffix == ".pdf":
                 return self.extract_from_pdf(file_path)
-            elif suffix in {
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".gif",
-                ".webp",
-                ".tiff",
-                ".bmp",
-                ".heic",
-                ".heif",
-            }:
-                # Convert non-standard formats to PNG first
-                if suffix in {".tiff", ".bmp"}:
-                    from PIL import Image
 
-                    img = Image.open(file_path)
-                    temp_path = Path(tempfile.gettempdir()) / "hsa_receipt_converted.png"
-                    img.save(temp_path, "PNG")
-                    try:
-                        return self.extract_from_image(temp_path)
-                    finally:
-                        temp_path.unlink(missing_ok=True)
-                elif suffix in {".heic", ".heif"}:
-                    # HEIC/HEIF requires pillow-heif plugin
-                    try:
-                        import pillow_heif
+            # Standard image formats - process directly
+            if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+                return self.extract_from_image(file_path)
 
-                        pillow_heif.register_heif_opener()
-                    except ImportError as err:
-                        raise ImportError(
-                            "pillow-heif not installed. Run: uv add pillow-heif"
-                        ) from err
+            # Formats requiring conversion to PNG
+            if suffix in {".tiff", ".bmp", ".heic", ".heif"}:
+                return self._extract_with_conversion(file_path, suffix)
 
-                    from PIL import Image
-
-                    img = Image.open(file_path)
-                    temp_path = Path(tempfile.gettempdir()) / "hsa_receipt_converted.png"
-                    img.save(temp_path, "PNG")
-                    logger.info("Converted HEIC to PNG for processing")
-                    try:
-                        return self.extract_from_image(temp_path)
-                    finally:
-                        temp_path.unlink(missing_ok=True)
-                else:
-                    return self.extract_from_image(file_path)
-            else:
-                raise ValueError(f"Unsupported file type: {suffix}")
+            raise ValueError(f"Unsupported file type: {suffix}")
         finally:
             # Reset provider skill after extraction
             self._current_provider_skill = None
+
+    def _extract_with_conversion(self, file_path: Path, suffix: str) -> ExtractedReceipt:
+        """Extract from image formats that require conversion to PNG first."""
+        if suffix in {".heic", ".heif"}:
+            try:
+                import pillow_heif
+
+                pillow_heif.register_heif_opener()
+            except ImportError as err:
+                raise ImportError("pillow-heif not installed. Run: uv add pillow-heif") from err
+            logger.info("Converting HEIC to PNG for processing")
+
+        from PIL import Image
+
+        img = Image.open(file_path)
+        temp_path = Path(tempfile.gettempdir()) / "hsa_receipt_converted.png"
+        img.save(temp_path, "PNG")
+        try:
+            return self.extract_from_image(temp_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def _parse_response(self, response: str) -> dict[str, Any]:
         """Parse LLM response to extract JSON."""
