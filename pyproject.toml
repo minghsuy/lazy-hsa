@@ -22,7 +22,7 @@ dependencies = [
     # Image/PDF handling
     "Pillow>=11.0.0",
     "pdf2image>=1.17.0",
-    "pypdf>=5.1.0",
+    "pypdf>=6.6.0",  # Security: fix malformed PDF DoS
     # Web scraping for portals (future)
     "playwright>=1.49.0",
     "beautifulsoup4>=4.12.0",
@@ -38,6 +38,9 @@ dependencies = [
     "openpyxl>=3.1.0",
     "pillow-heif>=1.1.1",
     "pdfplumber>=0.11.9",
+    # Security: explicit version constraints for transitive dependencies
+    "urllib3>=2.6.3",  # Fix decompression bomb bypass
+    "pyasn1>=0.6.2",   # Fix DoS in decoder
 ]
 
 [project.optional-dependencies]
