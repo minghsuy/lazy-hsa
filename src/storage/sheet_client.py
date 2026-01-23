@@ -13,8 +13,10 @@ logger = logging.getLogger(__name__)
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     """Safely convert a value to float, returning default on failure."""
+    if value is None:
+        return default
     try:
-        return float(value or default)
+        return float(value)
     except (ValueError, TypeError):
         return default
 
