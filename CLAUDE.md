@@ -120,6 +120,7 @@ Provider-specific extraction prompts activate automatically based on filename pa
 | **Aetna** | "aetna" | Medical EOB, Member Responsibility, Plan Paid fields |
 | **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" | Vision EOB format |
+| **Stanford** | "stanford", "stanford health" | Hospital statements, Patient Responsibility, Service Date |
 
 ### Tax Calculation (Retail Receipts)
 For retail receipts (Costco, CVS, etc.), the system:

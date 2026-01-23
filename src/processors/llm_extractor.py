@@ -17,6 +17,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Extraction constants
+MIN_PAGE_TEXT_LENGTH = 50  # Skip pages with less usable text
+MAX_FALLBACK_PAGES = 4     # Max pages to check in image-only fallback
+MAX_PDF_PAGES = 5          # Max pages to process from PDFs
+
 
 class Category(Enum):
     MEDICAL = "medical"
@@ -220,6 +225,22 @@ VSP VISION-SPECIFIC RULES:
 - Look for "Your Cost" or "Member Pays" for patient_responsibility
 - category = "vision"
 """,
+    "stanford": """
+STANFORD HEALTH CARE-SPECIFIC RULES:
+- This is a hospital/medical statement from Stanford Health Care
+- IMPORTANT: Look through ALL text for the key fields - they may be on different pages
+- Look for "Patient Responsibility" for the amount the patient owes
+- Look for "Balance Due" or "Amount Due" as confirmation
+- Look for "Patient Deductible" - this often equals Patient Responsibility for HDHP plans
+- "Service Date" is the date of medical service (not statement date)
+- "Visit Type" describes the service (e.g., Outpatient, Inpatient)
+- "Location" is usually "Stanford Hospital" or a clinic name
+- Look for service descriptions like "Treatment/Observation Room"
+- insurance_paid may be $0 if applied to deductible
+- billed_amount is "Total Charges"
+- category = "medical"
+- document_type = "statement"
+""",
 }
 
 
@@ -249,6 +270,7 @@ def detect_provider_skill(filename: str, hints: list[str] | None = None) -> str 
         "aetna": ["aetna"],
         "delta_dental": ["delta dental", "deltadental"],
         "vsp": ["vsp", "vision service plan"],
+        "stanford": ["stanford", "stanford health", "stanfordhealthcare"],
     }
 
     for skill_key, patterns in provider_patterns.items():
@@ -336,14 +358,19 @@ class VisionExtractor:
 
         return image_data, mime_type
 
-    def _convert_pdf_to_images(self, pdf_path: Path) -> list[Path]:
-        """Convert PDF pages to images for vision processing."""
+    def _convert_pdf_to_images(self, pdf_path: Path, max_pages: int = MAX_PDF_PAGES) -> list[Path]:
+        """Convert PDF pages to images for vision processing.
+
+        Args:
+            pdf_path: Path to PDF file
+            max_pages: Maximum pages to convert (default MAX_PDF_PAGES, key info usually early)
+        """
         try:
             from pdf2image import convert_from_path
         except ImportError as err:
             raise ImportError("pdf2image not installed. Run: uv add pdf2image") from err
 
-        images = convert_from_path(str(pdf_path), dpi=200)
+        images = convert_from_path(str(pdf_path), dpi=200, last_page=max_pages)
         image_paths = []
 
         for i, image in enumerate(images):
@@ -352,6 +379,122 @@ class VisionExtractor:
             image_paths.append(temp_path)
 
         return image_paths
+
+    def _decode_cid_text(self, text: str) -> str:
+        """Decode CID-encoded text like (cid:84)(cid:104) to actual characters."""
+        def decode_cid(match):
+            try:
+                cid = int(match.group(1))
+                # CID values are typically ASCII codes
+                if cid == 10:  # Newline - check first
+                    return '\n'
+                elif 32 <= cid <= 126:  # Printable ASCII (includes space at 32)
+                    return chr(cid)
+                else:
+                    return ''
+            except (ValueError, OverflowError):
+                return ''
+
+        return re.sub(r'\(cid:(\d+)\)', decode_cid, text)
+
+    def _clean_extracted_text(self, text: str) -> str:
+        """Clean extracted PDF text by removing garbage and decoding CID."""
+        # First, decode CID-encoded text like (cid:84)(cid:104) -> "Th"
+        text = self._decode_cid_text(text)
+
+        # Remove QR code binary patterns (long strings of 0s and 1s)
+        text = re.sub(r'\b[01]{10,}\b', '', text)
+
+        # Remove hex patterns like 0X37B08973
+        text = re.sub(r'\b0X[0-9A-Fa-f]+\b', '', text)
+
+        # Remove excessive whitespace
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+        text = re.sub(r'[ \t]+', ' ', text)
+
+        return text.strip()
+
+    def _extract_text_with_pdfplumber(self, pdf_path: Path, max_pages: int = MAX_PDF_PAGES) -> str:
+        """Extract text from PDF pages using pdfplumber.
+
+        Args:
+            pdf_path: Path to the PDF file
+            max_pages: Maximum pages to extract (default MAX_PDF_PAGES, key info is usually early)
+        """
+        try:
+            import pdfplumber
+        except ImportError as err:
+            raise ImportError("pdfplumber not installed. Run: uv add pdfplumber") from err
+
+        all_text = []
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                pages_to_process = min(len(pdf.pages), max_pages)
+                for i, page in enumerate(pdf.pages[:pages_to_process]):
+                    page_text = page.extract_text() or ""
+
+                    # Clean the extracted text
+                    page_text = self._clean_extracted_text(page_text)
+
+                    # Skip pages with very little usable text
+                    if len(page_text) > MIN_PAGE_TEXT_LENGTH:
+                        all_text.append(f"=== PAGE {i + 1} ===\n{page_text}")
+
+            combined = "\n\n".join(all_text)
+            logger.info(f"Extracted {len(combined)} chars from {len(all_text)} PDF pages (of {pages_to_process} processed)")
+            return combined
+        except (OSError, ValueError) as e:
+            logger.warning(f"pdfplumber extraction failed ({type(e).__name__}): {e}")
+            return ""
+        except Exception as e:
+            logger.error(f"Unexpected pdfplumber error: {type(e).__name__}: {e}")
+            return ""
+
+    def _extract_with_text_and_image(
+        self, text_content: str, image_path: Path | None = None
+    ) -> ExtractedReceipt:
+        """Extract receipt data using text content and optional image."""
+        client = self._init_client()
+        prompt = self._get_prompt()
+
+        # Build message content
+        content = []
+
+        # Add instruction about text content
+        text_prompt = prompt + f"""
+
+DOCUMENT TEXT (extracted from all pages):
+```
+{text_content}
+```
+
+Analyze the text above to extract the JSON data. The text contains content from ALL pages of the document.
+"""
+        content.append({"type": "text", "text": text_prompt})
+
+        # Add image if available (for visual verification)
+        if image_path and image_path.exists():
+            image_data, mime_type = self._encode_image(image_path)
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
+            })
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+
+            raw_response = response.choices[0].message.content
+            parsed = self._parse_response(raw_response)
+            return self._build_receipt(parsed)
+
+        except Exception as e:
+            logger.error(f"Text+image extraction failed: {e}")
+            return self._fallback_extraction("text extraction")
 
     def _get_prompt(self) -> str:
         """Get the extraction prompt, including any active provider skill."""
@@ -394,16 +537,38 @@ class VisionExtractor:
             return self._fallback_extraction(str(image_path))
 
     def extract_from_pdf(self, pdf_path: Path) -> ExtractedReceipt:
-        """Extract receipt data from PDF (converts to images first)."""
+        """Extract receipt data from PDF using pdfplumber text + first page image."""
+        # First, try to extract text from all pages using pdfplumber
+        text_content = self._extract_text_with_pdfplumber(pdf_path)
+
+        # Convert first page to image for visual context
         image_paths = self._convert_pdf_to_images(pdf_path)
 
         try:
-            # For multi-page PDFs, process first page (usually has key info)
-            # Could be extended to process all pages and merge
-            if image_paths:
+            if text_content:
+                # Use text from all pages + first page image
+                first_image = image_paths[0] if image_paths else None
+                result = self._extract_with_text_and_image(text_content, first_image)
+
+                # If result looks incomplete (zero amount), try image-only on key pages
+                if result.patient_responsibility == 0 and len(image_paths) > 1:
+                    logger.info("Zero amount from text extraction, trying image-only on key pages...")
+                    for img_path in image_paths[:MAX_FALLBACK_PAGES]:
+                        alt_result = self.extract_from_image(img_path)
+                        if alt_result.patient_responsibility > 0:
+                            # Replace with image-only result if it found a valid amount
+                            if alt_result.confidence_score >= result.confidence_score:
+                                result = alt_result
+                            break
+
+                return result
+
+            elif image_paths:
+                # Fallback: no text extracted, use image-only approach
+                logger.warning("No text extracted, falling back to image-only")
                 result = self.extract_from_image(image_paths[0])
 
-                # If multi-page and low confidence, try other pages
+                # Check other pages if first page gave low confidence
                 if len(image_paths) > 1 and result.confidence_score < 0.7:
                     for img_path in image_paths[1:]:
                         alt_result = self.extract_from_image(img_path)
