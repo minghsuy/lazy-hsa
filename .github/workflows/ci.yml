@@ -21,7 +21,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --extra dev --extra dev
 
       - name: Run ruff linter
         run: uv run ruff check src/ tests/
@@ -43,7 +43,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --extra dev
 
       - name: Run tests
         run: uv run pytest tests/ -v --tb=short
@@ -65,10 +65,8 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --extra dev
 
       - name: Run bandit security linter
-        run: |
-          uv add --dev bandit
-          uv run bandit -r src/ -ll -ii
+        run: uv run --with bandit bandit -r src/ -ll -ii
         continue-on-error: true  # Don't fail on first run, review findings first
