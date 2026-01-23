@@ -1,4 +1,5 @@
 """Google Sheets Client for HSA Receipt System - manages tracking spreadsheet"""
+
 import contextlib
 import logging
 from dataclasses import dataclass
@@ -38,16 +39,30 @@ class GSheetsClient:
     """Google Sheets client for HSA receipt tracking."""
 
     SCOPES = [
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/drive.file',  # Needed to create/find spreadsheets
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive.file",  # Needed to create/find spreadsheets
     ]
 
     HEADERS = [
-        "ID", "Date Added", "Service Date", "Provider", "Service Type",
-        "Patient", "Category", "Billed Amount", "Insurance Paid",
-        "Patient Responsibility", "HSA Eligible", "Document Type",
-        "File Path", "File Link", "Reimbursed", "Reimbursement Date",
-        "Reimbursement Amount", "Confidence", "Notes"
+        "ID",
+        "Date Added",
+        "Service Date",
+        "Provider",
+        "Service Type",
+        "Patient",
+        "Category",
+        "Billed Amount",
+        "Insurance Paid",
+        "Patient Responsibility",
+        "HSA Eligible",
+        "Document Type",
+        "File Path",
+        "File Link",
+        "Reimbursed",
+        "Reimbursement Date",
+        "Reimbursement Amount",
+        "Confidence",
+        "Notes",
     ]
 
     def __init__(
@@ -93,7 +108,7 @@ class GSheetsClient:
                 creds = flow.run_local_server(port=0)
 
             token_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(token_path, 'w') as f:
+            with open(token_path, "w") as f:
                 f.write(creds.to_json())
 
         self._client = gspread.authorize(creds)
@@ -114,8 +129,10 @@ class GSheetsClient:
         try:
             self._worksheet = self._spreadsheet.worksheet(self.worksheet_name)
         except Exception:
-            self._worksheet = self._spreadsheet.add_worksheet(title=self.worksheet_name, rows=1000, cols=len(self.HEADERS))
-            self._worksheet.update('A1', [self.HEADERS])
+            self._worksheet = self._spreadsheet.add_worksheet(
+                title=self.worksheet_name, rows=1000, cols=len(self.HEADERS)
+            )
+            self._worksheet.update("A1", [self.HEADERS])
             logger.info(f"Created worksheet: {self.worksheet_name}")
 
         return self._worksheet
@@ -126,16 +143,28 @@ class GSheetsClient:
         next_id = len(all_values)
 
         row = [
-            next_id, record.date_added or datetime.now().strftime("%Y-%m-%d"),
-            record.service_date or "", record.provider, record.service_type,
-            record.patient, record.category, record.billed_amount, record.insurance_paid,
-            record.patient_responsibility, "Yes" if record.hsa_eligible else "No",
-            record.document_type, record.file_path, record.file_link,
-            "Yes" if record.reimbursed else "No", record.reimbursement_date or "",
-            record.reimbursement_amount or 0, f"{record.confidence:.0%}", record.notes
+            next_id,
+            record.date_added or datetime.now().strftime("%Y-%m-%d"),
+            record.service_date or "",
+            record.provider,
+            record.service_type,
+            record.patient,
+            record.category,
+            record.billed_amount,
+            record.insurance_paid,
+            record.patient_responsibility,
+            "Yes" if record.hsa_eligible else "No",
+            record.document_type,
+            record.file_path,
+            record.file_link,
+            "Yes" if record.reimbursed else "No",
+            record.reimbursement_date or "",
+            record.reimbursement_amount or 0,
+            f"{record.confidence:.0%}",
+            record.notes,
         ]
 
-        worksheet.append_row(row, value_input_option='USER_ENTERED')
+        worksheet.append_row(row, value_input_option="USER_ENTERED")
         logger.info(f"Added record ID {next_id}: {record.provider}")
         return next_id
 
@@ -211,38 +240,60 @@ class GSheetsClient:
                 year = int(service_date[:4])
 
                 if year not in summary:
-                    summary[year] = {"total_billed": 0, "total_insurance": 0, "total_responsibility": 0, "total_reimbursed": 0, "count": 0}
+                    summary[year] = {
+                        "total_billed": 0,
+                        "total_insurance": 0,
+                        "total_responsibility": 0,
+                        "total_reimbursed": 0,
+                        "count": 0,
+                    }
 
                 summary[year]["count"] += 1
                 summary[year]["total_billed"] += float(record.get("Billed Amount", 0) or 0)
                 summary[year]["total_insurance"] += float(record.get("Insurance Paid", 0) or 0)
-                summary[year]["total_responsibility"] += float(record.get("Patient Responsibility", 0) or 0)
+                summary[year]["total_responsibility"] += float(
+                    record.get("Patient Responsibility", 0) or 0
+                )
 
                 if record.get("Reimbursed") == "Yes":
-                    summary[year]["total_reimbursed"] += float(record.get("Reimbursement Amount", 0) or 0)
+                    summary[year]["total_reimbursed"] += float(
+                        record.get("Reimbursement Amount", 0) or 0
+                    )
             except (ValueError, TypeError):
                 pass
 
         return summary
 
 
-def create_record_from_extraction(extraction: 'ExtractedReceipt', file_path: str, file_link: str) -> ReceiptRecord:
+def create_record_from_extraction(
+    extraction: "ExtractedReceipt", file_path: str, file_link: str
+) -> ReceiptRecord:
     return ReceiptRecord(
-        id=0, date_added=datetime.now().strftime("%Y-%m-%d"),
+        id=0,
+        date_added=datetime.now().strftime("%Y-%m-%d"),
         service_date=extraction.service_date or "",
-        provider=extraction.provider_name, service_type=extraction.service_type,
-        patient=extraction.patient_name, category=extraction.category,
-        billed_amount=extraction.billed_amount, insurance_paid=extraction.insurance_paid,
+        provider=extraction.provider_name,
+        service_type=extraction.service_type,
+        patient=extraction.patient_name,
+        category=extraction.category,
+        billed_amount=extraction.billed_amount,
+        insurance_paid=extraction.insurance_paid,
         patient_responsibility=extraction.patient_responsibility,
-        hsa_eligible=extraction.hsa_eligible, document_type=extraction.document_type,
-        file_path=file_path, file_link=file_link, reimbursed=False,
-        reimbursement_date="", reimbursement_amount=0,
-        confidence=extraction.confidence_score, notes=extraction.notes
+        hsa_eligible=extraction.hsa_eligible,
+        document_type=extraction.document_type,
+        file_path=file_path,
+        file_link=file_link,
+        reimbursed=False,
+        reimbursement_date="",
+        reimbursement_amount=0,
+        confidence=extraction.confidence_score,
+        notes=extraction.notes,
     )
 
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
         creds = sys.argv[2] if len(sys.argv) > 2 else "config/credentials/sheets_credentials.json"
         client = GSheetsClient(credentials_file=creds)

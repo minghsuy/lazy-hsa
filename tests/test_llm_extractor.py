@@ -41,7 +41,9 @@ class TestDetectProviderSkill:
         """Detect Sutter Health from filename."""
         assert detect_provider_skill("sutter_eob.pdf") == "sutter"
         assert detect_provider_skill("pamf_statement.pdf") == "sutter"
-        assert detect_provider_skill("palo alto medical.pdf", hints=["palo alto medical"]) == "sutter"
+        assert (
+            detect_provider_skill("palo alto medical.pdf", hints=["palo alto medical"]) == "sutter"
+        )
 
     def test_detect_aetna(self):
         """Detect Aetna from filename."""

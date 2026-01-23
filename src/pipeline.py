@@ -55,7 +55,9 @@ class HSAReceiptPipeline:
 
         # Family member names (for folder mapping)
         family = self.config.get("family", [])
-        self.family_names = [m.get("name", "Unknown") for m in family] if family else ["Ming", "Wife", "Son"]
+        self.family_names = (
+            [m.get("name", "Unknown") for m in family] if family else ["Ming", "Wife", "Son"]
+        )
 
         # Initialize components (lazy)
         self._llm = None
@@ -127,9 +129,7 @@ class HSAReceiptPipeline:
                 credentials_file=gdrive_config.get(
                     "credentials_file", "config/credentials/gdrive_credentials.json"
                 ),
-                token_file=gdrive_config.get(
-                    "token_file", "config/credentials/gdrive_token.json"
-                ),
+                token_file=gdrive_config.get("token_file", "config/credentials/gdrive_token.json"),
                 root_folder_name=gdrive_config.get("root_folder", "HSA_Receipts"),
             )
         return self._gdrive
@@ -288,7 +288,10 @@ class HSAReceiptPipeline:
             if duplicate_of:
                 existing_notes = record.notes or ""
                 record = ReceiptRecord(
-                    **{**record.__dict__, "notes": f"[Duplicate of ID {duplicate_of}] {existing_notes}".strip()}
+                    **{
+                        **record.__dict__,
+                        "notes": f"[Duplicate of ID {duplicate_of}] {existing_notes}".strip(),
+                    }
                 )
 
             record_id = self.sheets.add_record(record)
@@ -441,7 +444,9 @@ try:
             console.print(f"Processed {len(results)} files")
             for r in results:
                 status = "[yellow]REVIEW[/yellow]" if r.get("needs_review") else "[green]OK[/green]"
-                console.print(f"  {status} {r['extraction']['provider_name']}: ${r['extraction']['patient_responsibility']:.2f}")
+                console.print(
+                    f"  {status} {r['extraction']['provider_name']}: ${r['extraction']['patient_responsibility']:.2f}"
+                )
         else:
             console.print("[red]Specify --file or --dir[/red]")
 
@@ -489,7 +494,9 @@ try:
 
         # Get credentials path from config
         gdrive_config = config.get("google_drive", {})
-        creds_file = gdrive_config.get("credentials_file", "config/credentials/gdrive_credentials.json")
+        creds_file = gdrive_config.get(
+            "credentials_file", "config/credentials/gdrive_credentials.json"
+        )
         token_file = "config/credentials/gmail_token.json"
 
         # Parse since date (default: HSA start date)
@@ -513,7 +520,9 @@ try:
         for msg in messages:
             if msg.attachments:
                 total_attachments += len(msg.attachments)
-                console.print(f"  {msg.date.strftime('%Y-%m-%d')} | {msg.sender[:40]} | {msg.subject[:50]}")
+                console.print(
+                    f"  {msg.date.strftime('%Y-%m-%d')} | {msg.sender[:40]} | {msg.subject[:50]}"
+                )
                 for att in msg.attachments:
                     console.print(f"    └─ [blue]{att.filename}[/blue] ({att.mime_type})")
 
@@ -539,15 +548,23 @@ try:
                         result = pipeline.process_file(str(filepath), dry_run=False)
                         if result:
                             processed += 1
-                            status = "[green]OK[/green]" if not result.get("needs_review") else "[yellow]REVIEW[/yellow]"
-                            console.print(f"  {status} {result['extraction']['provider_name']}: ${result['extraction']['patient_responsibility']:.2f}")
+                            status = (
+                                "[green]OK[/green]"
+                                if not result.get("needs_review")
+                                else "[yellow]REVIEW[/yellow]"
+                            )
+                            console.print(
+                                f"  {status} {result['extraction']['provider_name']}: ${result['extraction']['patient_responsibility']:.2f}"
+                            )
 
             console.print(f"\n[green]Processed {processed} attachments[/green]")
 
     @cli.command("inbox")
     @click.option("--watch", is_flag=True, help="Continuously watch for new files")
     @click.option("--interval", default=60, help="Polling interval in seconds (with --watch)")
-    @click.option("--dry-run", is_flag=True, help="Preview extraction without uploading or recording")
+    @click.option(
+        "--dry-run", is_flag=True, help="Preview extraction without uploading or recording"
+    )
     @click.pass_context
     def inbox(ctx, watch, interval, dry_run):
         """Process files from Google Drive _Inbox folder.
@@ -575,7 +592,9 @@ try:
         mode_label = "[yellow][DRY RUN][/yellow] " if dry_run else ""
 
         if watch:
-            console.print(f"{mode_label}[cyan]Watching _Inbox folder (polling every {interval}s)...[/cyan]")
+            console.print(
+                f"{mode_label}[cyan]Watching _Inbox folder (polling every {interval}s)...[/cyan]"
+            )
             console.print("[yellow]Press Ctrl+C to stop[/yellow]\n")
             watcher.watch(interval=interval)
         else:
@@ -591,7 +610,11 @@ try:
                     else:
                         result = r["result"]
                         ext = result["extraction"]
-                        status = "[green]OK[/green]" if not result.get("needs_review") else "[yellow]REVIEW[/yellow]"
+                        status = (
+                            "[green]OK[/green]"
+                            if not result.get("needs_review")
+                            else "[yellow]REVIEW[/yellow]"
+                        )
                         console.print(f"{status} {r['file']}:")
                         console.print(f"    Provider: {ext['provider_name']}")
                         console.print(f"    Patient: {ext['patient_name']}")
@@ -603,7 +626,9 @@ try:
                             console.print(f"    Notes: {ext['notes']}")
 
                 if dry_run:
-                    console.print(f"\n[yellow]Dry run complete - {len(results)} files previewed (not committed)[/yellow]")
+                    console.print(
+                        f"\n[yellow]Dry run complete - {len(results)} files previewed (not committed)[/yellow]"
+                    )
                 else:
                     console.print(f"\n[green]Processed {len(results)} files[/green]")
 

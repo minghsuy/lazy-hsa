@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Extraction constants
 MIN_PAGE_TEXT_LENGTH = 50  # Skip pages with less usable text
-MAX_FALLBACK_PAGES = 4     # Max pages to check in image-only fallback
-MAX_PDF_PAGES = 5          # Max pages to process from PDFs
+MAX_FALLBACK_PAGES = 4  # Max pages to check in image-only fallback
+MAX_PDF_PAGES = 5  # Max pages to process from PDFs
 
 
 class Category(Enum):
@@ -143,7 +143,6 @@ COSTCO RECEIPT RULES:
 
 Example: If you see 4 lines of "SALONPAS 140  15.99 A F Dept" → eligible_subtotal = 63.96
 """,
-
     "cvs": """
 CVS-SPECIFIC RULES:
 - Look for FSA/HSA ELIGIBLE label on items
@@ -152,7 +151,6 @@ CVS-SPECIFIC RULES:
 - For OTC items, only include if marked FSA eligible
 - category = "pharmacy"
 """,
-
     "walgreens": """
 WALGREENS-SPECIFIC RULES:
 - Look for "FSA" or "HSA" markers next to eligible items
@@ -160,7 +158,6 @@ WALGREENS-SPECIFIC RULES:
 - For OTC items, only include if marked FSA/HSA eligible
 - category = "pharmacy"
 """,
-
     "amazon": """
 AMAZON ORDER RULES:
 - patient_name: Extract from "Ship to:" name
@@ -175,7 +172,6 @@ AMAZON ORDER RULES:
 - category: "pharmacy"
 - document_type: "receipt"
 """,
-
     "sutter": """
 SUTTER HEALTH-SPECIFIC RULES:
 - This is likely a hospital/medical bill or EOB
@@ -185,7 +181,6 @@ SUTTER HEALTH-SPECIFIC RULES:
 - category = "medical"
 - document_type is likely "statement" or "eob"
 """,
-
     "aetna": """
 AETNA EOB-SPECIFIC RULES:
 - This is a medical EOB from Aetna HDHP
@@ -197,7 +192,6 @@ AETNA EOB-SPECIFIC RULES:
 - category = "medical"
 - document_type = "eob"
 """,
-
     "express_scripts": """
 EXPRESS SCRIPTS-SPECIFIC RULES:
 - This is a pharmacy receipt/invoice from Express Scripts (PBM)
@@ -209,7 +203,6 @@ EXPRESS SCRIPTS-SPECIFIC RULES:
 - document_type = "prescription"
 - hsa_eligible = true (prescriptions are always eligible)
 """,
-
     "delta_dental": """
 DELTA DENTAL-SPECIFIC RULES:
 - This is a dental EOB
@@ -218,7 +211,6 @@ DELTA DENTAL-SPECIFIC RULES:
 - category = "dental"
 - document_type = "eob"
 """,
-
     "vsp": """
 VSP VISION-SPECIFIC RULES:
 - This is a vision EOB or receipt
@@ -265,7 +257,13 @@ def detect_provider_skill(filename: str, hints: list[str] | None = None) -> str 
         "cvs": ["cvs"],
         "walgreens": ["walgreens", "walgreen"],
         "amazon": ["amazon"],
-        "express_scripts": ["express scripts", "express_scripts", "express-scripts", "expressscripts", "esrx"],
+        "express_scripts": [
+            "express scripts",
+            "express_scripts",
+            "express-scripts",
+            "expressscripts",
+            "esrx",
+        ],
         "sutter": ["sutter", "pamf", "palo alto medical"],
         "aetna": ["aetna"],
         "delta_dental": ["delta dental", "deltadental"],
@@ -382,20 +380,21 @@ class VisionExtractor:
 
     def _decode_cid_text(self, text: str) -> str:
         """Decode CID-encoded text like (cid:84)(cid:104) to actual characters."""
+
         def decode_cid(match):
             try:
                 cid = int(match.group(1))
                 # CID values are typically ASCII codes
                 if cid == 10:  # Newline - check first
-                    return '\n'
+                    return "\n"
                 elif 32 <= cid <= 126:  # Printable ASCII (includes space at 32)
                     return chr(cid)
                 else:
-                    return ''
+                    return ""
             except (ValueError, OverflowError):
-                return ''
+                return ""
 
-        return re.sub(r'\(cid:(\d+)\)', decode_cid, text)
+        return re.sub(r"\(cid:(\d+)\)", decode_cid, text)
 
     def _clean_extracted_text(self, text: str) -> str:
         """Clean extracted PDF text by removing garbage and decoding CID."""
@@ -403,14 +402,14 @@ class VisionExtractor:
         text = self._decode_cid_text(text)
 
         # Remove QR code binary patterns (long strings of 0s and 1s)
-        text = re.sub(r'\b[01]{10,}\b', '', text)
+        text = re.sub(r"\b[01]{10,}\b", "", text)
 
         # Remove hex patterns like 0X37B08973
-        text = re.sub(r'\b0X[0-9A-Fa-f]+\b', '', text)
+        text = re.sub(r"\b0X[0-9A-Fa-f]+\b", "", text)
 
         # Remove excessive whitespace
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+        text = re.sub(r"[ \t]+", " ", text)
 
         return text.strip()
 
@@ -441,7 +440,9 @@ class VisionExtractor:
                         all_text.append(f"=== PAGE {i + 1} ===\n{page_text}")
 
             combined = "\n\n".join(all_text)
-            logger.info(f"Extracted {len(combined)} chars from {len(all_text)} PDF pages (of {pages_to_process} processed)")
+            logger.info(
+                f"Extracted {len(combined)} chars from {len(all_text)} PDF pages (of {pages_to_process} processed)"
+            )
             return combined
         except (OSError, ValueError) as e:
             logger.warning(f"pdfplumber extraction failed ({type(e).__name__}): {e}")
@@ -461,7 +462,9 @@ class VisionExtractor:
         content = []
 
         # Add instruction about text content
-        text_prompt = prompt + f"""
+        text_prompt = (
+            prompt
+            + f"""
 
 DOCUMENT TEXT (extracted from all pages):
 ```
@@ -470,15 +473,18 @@ DOCUMENT TEXT (extracted from all pages):
 
 Analyze the text above to extract the JSON data. The text contains content from ALL pages of the document.
 """
+        )
         content.append({"type": "text", "text": text_prompt})
 
         # Add image if available (for visual verification)
         if image_path and image_path.exists():
             image_data, mime_type = self._encode_image(image_path)
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
-            })
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
+                }
+            )
 
         try:
             response = client.chat.completions.create(
@@ -552,7 +558,9 @@ Analyze the text above to extract the JSON data. The text contains content from 
 
                 # If result looks incomplete (zero amount), try image-only on key pages
                 if result.patient_responsibility == 0 and len(image_paths) > 1:
-                    logger.info("Zero amount from text extraction, trying image-only on key pages...")
+                    logger.info(
+                        "Zero amount from text extraction, trying image-only on key pages..."
+                    )
                     for img_path in image_paths[:MAX_FALLBACK_PAGES]:
                         alt_result = self.extract_from_image(img_path)
                         if alt_result.patient_responsibility > 0:
@@ -609,7 +617,17 @@ Analyze the text above to extract the JSON data. The text contains content from 
         try:
             if suffix == ".pdf":
                 return self.extract_from_pdf(file_path)
-            elif suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".tiff", ".bmp", ".heic", ".heif"}:
+            elif suffix in {
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".webp",
+                ".tiff",
+                ".bmp",
+                ".heic",
+                ".heif",
+            }:
                 # Convert non-standard formats to PNG first
                 if suffix in {".tiff", ".bmp"}:
                     from PIL import Image
@@ -625,11 +643,15 @@ Analyze the text above to extract the JSON data. The text contains content from 
                     # HEIC/HEIF requires pillow-heif plugin
                     try:
                         import pillow_heif
+
                         pillow_heif.register_heif_opener()
                     except ImportError as err:
-                        raise ImportError("pillow-heif not installed. Run: uv add pillow-heif") from err
+                        raise ImportError(
+                            "pillow-heif not installed. Run: uv add pillow-heif"
+                        ) from err
 
                     from PIL import Image
+
                     img = Image.open(file_path)
                     temp_path = Path(tempfile.gettempdir()) / "hsa_receipt_converted.png"
                     img.save(temp_path, "PNG")
@@ -699,13 +721,17 @@ Analyze the text above to extract the JSON data. The text contains content from 
             billed_amount = eligible_subtotal
         else:
             # EOB or other - use extracted values
-            patient_responsibility = float(parsed.get("patient_responsibility") or eligible_subtotal)
+            patient_responsibility = float(
+                parsed.get("patient_responsibility") or eligible_subtotal
+            )
             billed_amount = float(parsed.get("billed_amount") or eligible_subtotal)
 
         # Build notes with tax calculation if applicable
         notes = parsed.get("notes") or ""
         if tax_on_eligible > 0:
-            tax_note = f"Tax rate {tax_rate*100:.3f}%, tax on eligible items: ${tax_on_eligible:.2f}"
+            tax_note = (
+                f"Tax rate {tax_rate * 100:.3f}%, tax on eligible items: ${tax_on_eligible:.2f}"
+            )
             notes = f"{tax_note}. {notes}" if notes else tax_note
 
         # Handle service_type as string (LLM sometimes returns a list)

@@ -60,12 +60,16 @@ class DriveInboxWatcher:
         # Query for files in inbox (not folders)
         query = f"'{inbox_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false"
 
-        results = service.files().list(
-            q=query,
-            fields="files(id, name, mimeType, createdTime, modifiedTime)",
-            orderBy="createdTime desc",
-            pageSize=100,
-        ).execute()
+        results = (
+            service.files()
+            .list(
+                q=query,
+                fields="files(id, name, mimeType, createdTime, modifiedTime)",
+                orderBy="createdTime desc",
+                pageSize=100,
+            )
+            .execute()
+        )
 
         return results.get("files", [])
 
@@ -157,11 +161,13 @@ class DriveInboxWatcher:
                 result = self.process_callback(str(local_path), patient_hint)
 
                 if result:
-                    results.append({
-                        "file": filename,
-                        "file_id": file_id,
-                        "result": result,
-                    })
+                    results.append(
+                        {
+                            "file": filename,
+                            "file_id": file_id,
+                            "result": result,
+                        }
+                    )
 
                     # Mark as processed
                     self._processed_files.add(file_id)
@@ -178,17 +184,30 @@ class DriveInboxWatcher:
 
             except Exception as e:
                 logger.error(f"Error processing {filename}: {e}")
-                results.append({
-                    "file": filename,
-                    "file_id": file_id,
-                    "error": str(e),
-                })
+                results.append(
+                    {
+                        "file": filename,
+                        "file_id": file_id,
+                        "error": str(e),
+                    }
+                )
 
         return results
 
     def _is_receipt_file(self, filename: str) -> bool:
         """Check if file is a receipt type we can process."""
-        extensions = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".gif", ".heic", ".heif"}
+        extensions = {
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".tiff",
+            ".bmp",
+            ".webp",
+            ".gif",
+            ".heic",
+            ".heif",
+        }
         return Path(filename).suffix.lower() in extensions
 
     def _extract_patient_hint(self, filename: str) -> str | None:
