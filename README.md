@@ -168,6 +168,92 @@ Built-in extraction rules for common providers:
 
 See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for how to add provider skills.
 
+## How EOBs and Medical Bills Work Together
+
+Medical expenses typically generate two documents:
+
+1. **Provider Statement/Bill** - From the hospital, clinic, or pharmacy (e.g., Stanford Health, CVS)
+2. **EOB (Explanation of Benefits)** - From your insurance company (e.g., Aetna, Delta Dental)
+
+### The Problem
+
+These documents often have different amounts:
+- Provider bill shows what they charged
+- EOB shows what insurance actually paid and what you owe
+
+For HSA reimbursement, **the EOB is authoritative** - it shows your true out-of-pocket cost.
+
+### How lazy-hsa Handles This
+
+```
+You receive:                    lazy-hsa does:
+─────────────────────────────────────────────────────────────
+Stanford bill ($250)      →     Stores in Medical/Alice/
+                                Records: billed=$250, your_cost=$250
+
+Aetna EOB arrives         →     Extracts multiple claims from EOB
+(shows Stanford visit)          Stores EOB in EOBs/Medical/
+                                Links EOB to Stanford bill
+                                Updates: your_cost=$45 (from EOB)
+                                Marks EOB as authoritative
+```
+
+### Multi-Claim EOB Extraction
+
+A single Aetna EOB often contains multiple claims:
+- Different dates of service
+- Different family members
+- Different providers
+
+lazy-hsa extracts each claim separately:
+
+```
+One Aetna EOB PDF containing:
+├── Dec 15: Alice - Stanford Urgent Care - $45 owed
+├── Dec 18: Bob - Quest Diagnostics - $0 owed
+├── Dec 20: Alice - Stanford Lab - $12 owed
+└── Jan 05: Charlie - Pediatrics - $25 owed
+
+Creates separate spreadsheet entries for each claim.
+```
+
+### HSA Date Filtering
+
+Claims with service dates **before your HSA start date** are automatically skipped:
+
+```yaml
+# config.yaml
+hsa:
+  start_date: "2024-01-01"
+```
+
+If an EOB contains claims from December 2023 and January 2024, only the January claims are processed.
+
+### Folder Structure
+
+```
+HSA_Receipts/2024/
+├── Medical/
+│   └── Alice/
+│       └── 2024-01-15_Stanford_Urgent_Care_$45.00.pdf  ← Provider bill
+└── EOBs/
+    └── Medical/
+        └── 2024-01-20_Aetna_Medical_EOB.pdf  ← Insurance EOB
+```
+
+EOBs go to `EOBs/{category}/` to keep them separate from provider receipts.
+
+### Spreadsheet Linking
+
+The master spreadsheet tracks both documents and links them:
+
+| Date | Provider | Patient | Billed | Insurance Paid | Your Cost | Linked EOB | Authoritative |
+|------|----------|---------|--------|----------------|-----------|------------|---------------|
+| 2024-01-15 | Stanford | Alice | $250 | $205 | $45 | Row 15 | No |
+| 2024-01-20 | Aetna EOB | Alice | $250 | $205 | $45 | - | Yes |
+
+When calculating totals for reimbursement, only **authoritative** records are counted to avoid double-counting.
+
 ## Supported Formats
 
 - PDF (single and multi-page)
