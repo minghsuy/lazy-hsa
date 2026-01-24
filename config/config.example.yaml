@@ -9,7 +9,11 @@ llm:
   provider: "ollama"
 
   # Model name (as shown in `ollama list` or vLLM)
-  # Recommended: mistral-small3 (has vision), llava, or any vision-capable model
+  # Options:
+  #   - mistral-small3 (14B, vision-capable, good balance)
+  #   - llava (vision-capable, lighter weight)
+  #   - gpt-oss:20b (20B, better JSON output for complex EOBs)
+  #   - gpt-oss:120b (120B, highest accuracy, requires significant VRAM)
   model: "mistral-small3"
 
   # API endpoint (localhost for privacy - your data never leaves your machine)
@@ -18,6 +22,7 @@ llm:
   api_base: "http://localhost:11434/v1"
 
   # Vision-enabled model processes images directly (no separate OCR needed)
+  # For multi-page PDFs, pdfplumber extracts text from all pages
   vision_enabled: true
 
   # Generation settings

@@ -17,8 +17,9 @@ This is the [Boglehead HSA strategy](https://www.bogleheads.org/wiki/Health_savi
 
 ## Features
 
-- **Local AI extraction** - Uses Ollama/vLLM with vision models (Mistral Small 3, LLaVA, etc.)
+- **Local AI extraction** - Uses Ollama/vLLM with vision models (Mistral Small 3, gpt-oss:20b, LLaVA, etc.)
 - **Privacy-first** - All processing happens on your machine. Medical data never hits the cloud.
+- **Multi-page PDF support** - Uses pdfplumber to extract text from all pages, not just the first
 - **Multi-claim EOB support** - Extracts multiple claims from insurance EOBs automatically
 - **Provider skills** - Specialized extraction for CVS, Costco, Stanford, Aetna, and more
 - **Google Drive organization** - Automatic folder structure by year/category/patient
@@ -47,6 +48,14 @@ pip install -e .
 ollama pull mistral-small3  # or any vision-capable model
 ollama serve
 ```
+
+**Recommended models:**
+| Model | Size | Best For |
+|-------|------|----------|
+| `mistral-small3` | 14B | Good balance of speed and accuracy |
+| `gpt-oss:20b` | 20B | Better JSON output for complex EOBs |
+| `gpt-oss:120b` | 120B | Highest accuracy (requires significant VRAM) |
+| `llava` | 7B | Lighter weight, faster on CPU |
 
 ### 3. Set Up Google APIs
 
