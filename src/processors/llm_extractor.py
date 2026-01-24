@@ -70,6 +70,41 @@ class ExtractedReceipt:
         return f"{date}_{provider}_{service}_${amount}.{extension}"
 
 
+@dataclass
+class ExtractedClaim:
+    """Single claim extracted from an EOB (one service line)."""
+
+    service_date: str  # YYYY-MM-DD
+    patient_name: str
+    original_provider: str  # Provider who rendered service (e.g., "Stanford Health")
+    service_type: str
+    billed_amount: float
+    insurance_paid: float
+    patient_responsibility: float
+    claim_number: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class MultiClaimExtraction:
+    """Extraction result for multi-claim EOBs (e.g., Aetna EOB with multiple services)."""
+
+    document_type: str  # "eob"
+    payer_name: str  # "Aetna" (insurance company, not service provider)
+    category: str  # "medical", "dental", "vision"
+    confidence_score: float
+    notes: str
+    raw_extraction: dict[str, Any]
+    claims: list[ExtractedClaim]
+
+    def to_dict(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["claims"] = [c.to_dict() for c in self.claims]
+        return result
+
+
 EXTRACTION_PROMPT_TEMPLATE = """You are a medical receipt/EOB data extractor. Analyze this document image and extract structured information.
 
 The family members are: {family_members}
@@ -173,24 +208,42 @@ AMAZON ORDER RULES:
 - document_type: "receipt"
 """,
     "sutter": """
-SUTTER HEALTH-SPECIFIC RULES:
-- This is likely a hospital/medical bill or EOB
-- Look for "Patient Responsibility" or "Amount Due" for patient_responsibility
-- Look for "Insurance Payment" or "Plan Paid" for insurance_paid
-- service_date is the "Date of Service"
+SUTTER HEALTH STATEMENT RULES:
+- This is a hospital/medical statement from Sutter Health or PAMF
+- CRITICAL: Put the dollar amount in patient_responsibility field, NOT in notes!
+- Look for "Patient Responsibility" or "Amount Due" or "Balance Due" → put in patient_responsibility
+- Look for "Insurance Payment" or "Plan Paid" or "Adjustments" → put in insurance_paid
+- Look for "Total Charges" or "Billed Amount" → put in billed_amount
+- service_date = "Date of Service" or "Service Date" (format YYYY-MM-DD)
+- provider_name = the doctor/provider name shown (e.g., "Sivanesan, Kaartiga, MD")
 - category = "medical"
-- document_type is likely "statement" or "eob"
+- document_type = "statement"
+- eligible_subtotal = same as patient_responsibility (for non-retail medical)
 """,
     "aetna": """
-AETNA EOB-SPECIFIC RULES:
-- This is a medical EOB from Aetna HDHP
-- Look for "Member Responsibility" or "Your Responsibility" for patient_responsibility
-- Look for "Plan Paid" or "Aetna Paid" for insurance_paid
-- billed_amount is the "Charged" or "Billed" amount
-- May have multiple service lines - sum all patient responsibility amounts
-- Use earliest "Date of Service" if multiple dates
-- category = "medical"
-- document_type = "eob"
+OUTPUT FORMAT: Return ONLY a JSON object. No markdown, no explanation, no text before or after.
+
+This is an Aetna EOB with MULTIPLE claims. Extract each claim line as a separate entry.
+
+REQUIRED JSON STRUCTURE:
+{"document_type":"eob","payer_name":"Aetna","category":"medical","confidence_score":0.95,"notes":"","claims":[{"service_date":"YYYY-MM-DD","patient_name":"NAME","original_provider":"PROVIDER","service_type":"SERVICE","billed_amount":0.00,"insurance_paid":0.00,"patient_responsibility":0.00,"claim_number":""}]}
+
+PATIENT NAME MAPPING (use these exact names):
+- "Ming Hsun" or "self" -> "Ming"
+- "Thi Bich Thuy" or "spouse" -> "Vanessa"
+- "Maxwell" or "son" -> "Maxwell"
+
+FIELD MAPPING:
+- service_date: Look in claim details section for "Date of service" (format as YYYY-MM-DD)
+- original_provider: The doctor/facility name from "Provider" column (NOT Aetna)
+- patient_responsibility: The "Your Share" or "Member Responsibility" amount
+- insurance_paid: The "Plan's Share" or "Plan Paid" amount
+- billed_amount: The "Amount Billed" or "Charged" amount
+
+RULES:
+- Each row in the payment summary = one claim entry
+- If service_date not visible for a claim, use the statement date
+- Return ONLY the JSON object, nothing else
 """,
     "express_scripts": """
 EXPRESS SCRIPTS-SPECIFIC RULES:
@@ -494,6 +547,240 @@ Analyze the text above to extract the JSON data. The text contains content from 
             provider_skill=self._current_provider_skill,
         )
 
+    def _get_multi_claim_prompt(self) -> str:
+        """Get prompt for multi-claim EOB extraction."""
+        skill_text = PROVIDER_SKILLS.get(self._current_provider_skill, "")
+        return f"""You are a JSON data extractor. Your task is to extract structured data from this EOB document.
+
+IMPORTANT: Output ONLY valid JSON. No markdown, no explanations, no text outside the JSON.
+
+Family members for patient_name field: {", ".join(self.family_members)}
+
+{skill_text}
+
+Remember: Output ONLY the JSON object starting with {{ and ending with }}"""
+
+    def extract_eob(
+        self, file_path: str | Path, provider_hint: str | None = None
+    ) -> MultiClaimExtraction:
+        """Extract multi-claim data from an EOB file.
+
+        Args:
+            file_path: Path to the EOB file (PDF or image)
+            provider_hint: Optional hint for provider skill detection
+
+        Returns:
+            MultiClaimExtraction with list of claims
+        """
+        file_path = Path(file_path)
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        # Detect provider skill
+        hints = [provider_hint] if provider_hint else None
+        self._current_provider_skill = detect_provider_skill(file_path.name, hints)
+        if self._current_provider_skill:
+            logger.info(f"Detected provider skill for EOB: {self._current_provider_skill}")
+
+        try:
+            # Extract text from PDF - no vision needed for structured EOBs
+            suffix = file_path.suffix.lower()
+            if suffix == ".pdf":
+                text_content = self._extract_text_with_pdfplumber(file_path)
+            else:
+                # For images, we'd need OCR - not typical for EOBs
+                logger.warning(f"EOB extraction expects PDF, got {suffix}")
+                text_content = ""
+
+            if not text_content:
+                logger.error("No text extracted from EOB")
+                return self._build_multi_claim_extraction({})
+
+            # Build request for multi-claim extraction (text-only, no vision needed)
+            client = self._init_client()
+
+            # Build messages with system prompt for better JSON compliance
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a JSON extractor. You ONLY output valid JSON objects. "
+                        "Never output markdown, explanations, or any text outside the JSON. "
+                        "Your response must start with { and end with }."
+                    ),
+                },
+            ]
+
+            # User message with EOB content
+            skill_text = PROVIDER_SKILLS.get(self._current_provider_skill, "")
+            user_prompt = f"""Extract claims from this EOB document.
+
+{skill_text}
+
+Family members: {", ".join(self.family_members)}
+
+EOB TEXT:
+{text_content[:16000]}
+
+Output JSON only, starting with {{ and ending with }}:"""
+
+            messages.append({"role": "user", "content": user_prompt})
+
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=4096,  # Increased for multi-claim EOBs
+                temperature=self.temperature,
+            )
+
+            raw_response = response.choices[0].message.content
+            parsed = self._parse_response(raw_response)
+
+            return self._build_multi_claim_extraction(parsed)
+
+        finally:
+            self._current_provider_skill = None
+
+    def _build_multi_claim_extraction(self, parsed: dict[str, Any]) -> MultiClaimExtraction:
+        """Build MultiClaimExtraction from parsed JSON.
+
+        Handles two JSON formats:
+        1. Expected format with "claims" array
+        2. Alternative format with "summary.payment_summary" or "services" arrays
+        """
+        claims = []
+
+        # Try expected format first
+        raw_claims = parsed.get("claims", [])
+
+        # Fallback: try alternative format from payment_summary
+        # Check both top-level and nested in summary
+        if not raw_claims:
+            payment_summary = parsed.get("payment_summary", [])
+            if not payment_summary and "summary" in parsed:
+                payment_summary = parsed.get("summary", {}).get("payment_summary", [])
+            statement_date = parsed.get("statement_info", {}).get("statement_date", "")
+            if statement_date == "Not specified":
+                statement_date = ""
+
+            for item in payment_summary:
+                # Skip if item is not a dict (sometimes LLM returns strings)
+                if not isinstance(item, dict):
+                    continue
+
+                amount = self._parse_amount(item.get("your_share"))
+                plan_paid = self._parse_amount(item.get("plan_share"))
+
+                raw_claims.append(
+                    {
+                        "service_date": statement_date,
+                        "patient_name": self._map_patient_name(item.get("patient", "")),
+                        "original_provider": item.get("provider", "Unknown"),
+                        "service_type": "Medical Service",
+                        "billed_amount": amount,
+                        "insurance_paid": plan_paid,
+                        "patient_responsibility": amount,
+                    }
+                )
+
+        # Fallback: try services array for more detail
+        if not raw_claims and "services" in parsed:
+            for service_group in parsed.get("services", []):
+                patient = self._map_patient_name(service_group.get("patient", ""))
+
+                for detail in service_group.get("service_details", []):
+                    cost = self._parse_amount(detail.get("your_cost"))
+                    billed = self._parse_amount(detail.get("amount_billed"))
+
+                    raw_claims.append(
+                        {
+                            "service_date": detail.get("date", ""),
+                            "patient_name": patient,
+                            "original_provider": detail.get("provider", "Unknown"),
+                            "service_type": detail.get("service", "Medical Service"),
+                            "billed_amount": billed,
+                            "insurance_paid": max(0, billed - cost),
+                            "patient_responsibility": cost,
+                        }
+                    )
+
+        for raw_claim in raw_claims:
+            # Ensure patient name is mapped
+            patient = raw_claim.get("patient_name") or "Unknown"
+            if patient not in self.family_members:
+                patient = self._map_patient_name(patient)
+
+            claim = ExtractedClaim(
+                service_date=raw_claim.get("service_date") or "",
+                patient_name=patient,
+                original_provider=raw_claim.get("original_provider") or "Unknown",
+                service_type=raw_claim.get("service_type") or "Unknown Service",
+                billed_amount=self._parse_amount(raw_claim.get("billed_amount")),
+                insurance_paid=self._parse_amount(raw_claim.get("insurance_paid")),
+                patient_responsibility=self._parse_amount(raw_claim.get("patient_responsibility")),
+                claim_number=raw_claim.get("claim_number"),
+            )
+            claims.append(claim)
+
+        # Extract payer name - check multiple possible locations
+        payer_name = parsed.get("payer_name") or "Unknown"
+        if payer_name == "Unknown":
+            # Try insurance_info.insurer or fall back to detected provider skill
+            insurer = parsed.get("insurance_info", {}).get("insurer", "")
+            if "aetna" in insurer.lower() or self._current_provider_skill == "aetna":
+                payer_name = "Aetna"
+
+        return MultiClaimExtraction(
+            document_type=parsed.get("document_type") or "eob",
+            payer_name=payer_name,
+            category=parsed.get("category") or "medical",
+            confidence_score=float(parsed.get("confidence_score") or 0.8),
+            notes=parsed.get("notes") or "",
+            raw_extraction=parsed,
+            claims=claims,
+        )
+
+    def _map_patient_name(self, raw_name: str) -> str:
+        """Map raw patient names from EOB to family member names."""
+        raw_lower = raw_name.lower()
+
+        # Mapping of keywords to family member names
+        keyword_mappings = [
+            (["ming", "self"], "Ming"),
+            (["maxwell", "son"], "Maxwell"),
+            (["vanessa", "spouse", "thi"], "Vanessa"),
+        ]
+
+        for keywords, mapped_name in keyword_mappings:
+            if any(kw in raw_lower for kw in keywords):
+                return mapped_name
+
+        # Check if any family member name is contained
+        for name in self.family_members:
+            if name.lower() in raw_lower:
+                return name
+
+        # Default to first family member
+        return self.family_members[0] if self.family_members else "Unknown"
+
+    def _parse_amount(self, value: Any) -> float:
+        """Parse an amount value that might be a string with $ or a number."""
+        if value is None:
+            return 0.0
+        if isinstance(value, int | float):
+            return float(value)
+        if not isinstance(value, str):
+            return 0.0
+        # Remove $ and , then convert
+        cleaned = value.replace("$", "").replace(",", "").strip()
+        if not cleaned:
+            return 0.0
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+
     def extract_from_image(self, image_path: Path) -> ExtractedReceipt:
         """Extract receipt data from a single image."""
         client = self._init_client()
@@ -657,14 +944,26 @@ Analyze the text above to extract the JSON data. The text contains content from 
                 parsed = parsed[0]
             return parsed if isinstance(parsed, dict) else {}
         except json.JSONDecodeError:
-            # Try to find JSON object in response
-            match = re.search(r"\{[^{}]*\}", response, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group())
-                except json.JSONDecodeError:
-                    pass
+            # Try to find JSON object with nested structure (for multi-claim)
+            # Look for outermost { ... } allowing nested braces
+            brace_count = 0
+            start = -1
+            for i, c in enumerate(response):
+                if c == "{":
+                    if brace_count == 0:
+                        start = i
+                    brace_count += 1
+                elif c == "}":
+                    brace_count -= 1
+                    if brace_count == 0 and start != -1:
+                        try:
+                            return json.loads(response[start : i + 1])
+                        except json.JSONDecodeError:
+                            pass
+                        start = -1
+
             logger.warning("Could not parse LLM response as JSON")
+            logger.debug(f"Raw LLM response (first 500 chars): {response[:500]}")
             return {}
 
     def _build_receipt(self, parsed: dict[str, Any]) -> ExtractedReceipt:

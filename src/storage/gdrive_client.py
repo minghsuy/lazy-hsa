@@ -214,6 +214,31 @@ class GDriveClient:
         cat_id = self.get_or_create_folder(category.title(), year_id)
         return self.get_or_create_folder(patient, cat_id)
 
+    def get_folder_id_for_eob(self, category: str, year: int = None) -> str:
+        """Get folder ID for EOB files: {root}/{year}/EOBs/{category}/
+
+        EOBs are stored separately from regular receipts because:
+        1. They may contain multiple patients/claims
+        2. They serve as authoritative source when linked to statements
+
+        Args:
+            category: Category name (medical, dental, vision)
+            year: Year for folder (defaults to current year)
+
+        Returns:
+            Google Drive folder ID for the EOB category folder
+        """
+        year = year or datetime.now().year
+        root_id = self.get_or_create_folder(self.root_folder_name)
+        year_id = self.get_or_create_folder(str(year), root_id)
+        eob_id = self.get_or_create_folder("EOBs", year_id)
+        return self.get_or_create_folder(category.title(), eob_id)
+
+    def get_eob_folder_path(self, category: str, year: int = None) -> str:
+        """Get human-readable path for EOB folder."""
+        year = year or datetime.now().year
+        return f"{self.root_folder_name}/{year}/EOBs/{category.title()}"
+
 
 if __name__ == "__main__":
     import sys

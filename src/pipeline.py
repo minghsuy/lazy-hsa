@@ -16,7 +16,12 @@ import yaml
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from processors.llm_extractor import ExtractedReceipt, get_extractor
+from processors.llm_extractor import (
+    ExtractedClaim,
+    ExtractedReceipt,
+    detect_provider_skill,
+    get_extractor,
+)
 from storage.gdrive_client import GDriveClient
 from storage.sheet_client import GSheetsClient, ReceiptRecord, create_record_from_extraction
 
@@ -85,6 +90,226 @@ class HSAReceiptPipeline:
 
         # Default to primary holder
         return self.family_names[0]
+
+    def _get_pdf_content_hints(self, file_path: Path) -> list[str]:
+        """Extract text hints from PDF first page to detect provider.
+
+        Uses pdfplumber to get text from the first page for provider detection.
+        This allows detecting Aetna EOBs even if filename doesn't contain 'aetna'.
+        """
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(file_path) as pdf:
+                if pdf.pages:
+                    text = pdf.pages[0].extract_text() or ""
+                    # Return first 500 chars as hints (enough for header detection)
+                    return [text[:500]] if text else []
+        except Exception as e:
+            logger.debug(f"Could not extract PDF hints: {e}")
+        return []
+
+    def filter_claims_by_hsa_date(
+        self, claims: list[ExtractedClaim]
+    ) -> tuple[list[ExtractedClaim], list[ExtractedClaim]]:
+        """Filter claims: only include service_date >= HSA start date.
+
+        Args:
+            claims: List of extracted claims from EOB
+
+        Returns:
+            Tuple of (eligible_claims, skipped_claims)
+        """
+        eligible = []
+        skipped = []
+        hsa_start = self.hsa_start_date.strftime("%Y-%m-%d")
+
+        for claim in claims:
+            if not claim.service_date:
+                # If no date, include but log warning
+                logger.warning(f"Claim has no service_date: {claim.original_provider}")
+                eligible.append(claim)
+            elif claim.service_date >= hsa_start:
+                eligible.append(claim)
+            else:
+                skipped.append(claim)
+                logger.info(
+                    f"Skipping pre-HSA claim: {claim.patient_name} "
+                    f"{claim.service_date} ({claim.original_provider})"
+                )
+
+        return eligible, skipped
+
+    def process_eob_file(
+        self,
+        file_path: str,
+        dry_run: bool = False,
+    ) -> dict | None:
+        """Process a multi-claim EOB file.
+
+        EOBs (Explanation of Benefits) may contain multiple claims for different
+        patients and dates. This method:
+        1. Extracts all claims from the EOB
+        2. Filters out pre-HSA claims (service_date < 2026-01-01)
+        3. Uploads the file ONCE to EOBs/{category}/ folder
+        4. Creates a sheet entry for EACH eligible claim
+        5. Links claims to existing statements if found
+
+        Args:
+            file_path: Path to the EOB file
+            dry_run: If True, preview without uploading or recording
+
+        Returns:
+            Dict with processing results
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            logger.error(f"File not found: {file_path}")
+            return None
+
+        logger.info(f"Processing EOB: {file_path.name}")
+
+        # Step 1: Extract with multi-claim support
+        try:
+            extraction = self.llm.extract_eob(file_path)
+            logger.info(
+                f"Extracted {len(extraction.claims)} claims from {extraction.payer_name} EOB"
+            )
+        except Exception as e:
+            logger.error(f"EOB extraction failed: {e}")
+            return None
+
+        # Step 2: Filter by HSA date
+        eligible, skipped = self.filter_claims_by_hsa_date(extraction.claims)
+        logger.info(f"Claims: {len(eligible)} eligible, {len(skipped)} skipped (pre-HSA)")
+
+        if dry_run:
+            return {
+                "file": str(file_path),
+                "document_type": "eob",
+                "payer_name": extraction.payer_name,
+                "category": extraction.category,
+                "confidence_score": extraction.confidence_score,
+                "eligible_claims": [c.to_dict() for c in eligible],
+                "skipped_claims": [c.to_dict() for c in skipped],
+                "would_upload_to": f"EOBs/{extraction.category.title()}/",
+            }
+
+        if not eligible:
+            logger.warning("No eligible claims to process")
+            return {
+                "file": str(file_path),
+                "eligible_claims": [],
+                "skipped_claims": [c.to_dict() for c in skipped],
+                "message": "All claims are pre-HSA, nothing to process",
+            }
+
+        # Step 3: Upload file ONCE to EOBs/{category}/
+        # Use earliest service date for filename
+        earliest_date = min(
+            (c.service_date for c in eligible if c.service_date),
+            default=datetime.now().strftime("%Y-%m-%d"),
+        )
+        year = int(earliest_date[:4])
+        file_extension = file_path.suffix.lstrip(".")
+        new_filename = f"{earliest_date}_{extraction.payer_name}_EOB.{file_extension}"
+
+        try:
+            folder_id = self.gdrive.get_folder_id_for_eob(
+                category=extraction.category,
+                year=year,
+            )
+            drive_file = self.gdrive.upload_file(
+                local_path=file_path,
+                folder_id=folder_id,
+                new_name=new_filename,
+            )
+            logger.info(f"Uploaded EOB to Drive: {drive_file.web_link}")
+        except Exception as e:
+            logger.error(f"EOB upload failed: {e}")
+            return None
+
+        # Step 4: Create sheet entry for EACH eligible claim
+        results = []
+        for claim in eligible:
+            # Normalize patient name
+            patient = self._normalize_patient_name(claim.patient_name)
+
+            # Find matching statement
+            matches = self.sheets.find_matching_statements(
+                service_date=claim.service_date,
+                patient=patient,
+                provider_pattern=claim.original_provider,
+            )
+            linked_to = matches[0].get("ID") if matches else None
+
+            # Build file path
+            eob_folder_path = self.gdrive.get_eob_folder_path(extraction.category, year)
+            file_path_str = f"{eob_folder_path}/{new_filename}"
+
+            # Create record
+            record = ReceiptRecord(
+                id=0,
+                date_added=datetime.now().strftime("%Y-%m-%d"),
+                service_date=claim.service_date,
+                provider=extraction.payer_name,  # Aetna (payer)
+                service_type=claim.service_type,
+                patient=patient,
+                category=extraction.category,
+                billed_amount=claim.billed_amount,
+                insurance_paid=claim.insurance_paid,
+                patient_responsibility=claim.patient_responsibility,
+                hsa_eligible=True,
+                document_type="eob",
+                file_path=file_path_str,
+                file_link=drive_file.web_link,
+                reimbursed=False,
+                reimbursement_date="",
+                reimbursement_amount=0,
+                confidence=extraction.confidence_score,
+                notes=extraction.notes or "",
+                original_provider=claim.original_provider,
+                linked_record_id=None,  # Will be set by link_records
+                is_authoritative=True,  # EOB is authoritative
+            )
+
+            try:
+                record_id = self.sheets.add_record(record)
+
+                # Link to statement if found
+                if linked_to is not None:
+                    self.sheets.link_records(record_id, linked_to)
+                    logger.info(f"Linked EOB #{record_id} to statement #{linked_to}")
+
+                results.append(
+                    {
+                        "claim": claim.to_dict(),
+                        "record_id": record_id,
+                        "linked_to": linked_to,
+                        "patient": patient,
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to add record for claim: {e}")
+                results.append(
+                    {
+                        "claim": claim.to_dict(),
+                        "error": str(e),
+                    }
+                )
+
+        return {
+            "file": str(file_path),
+            "document_type": "eob",
+            "payer_name": extraction.payer_name,
+            "drive_file": {
+                "id": drive_file.id,
+                "name": drive_file.name,
+                "link": drive_file.web_link,
+            },
+            "claims_processed": results,
+            "claims_skipped": [c.to_dict() for c in skipped],
+        }
 
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from YAML."""
@@ -179,6 +404,21 @@ class HSAReceiptPipeline:
             return None
 
         logger.info(f"Processing: {file_path.name}")
+
+        # Check if this is a multi-claim EOB (e.g., Aetna)
+        # First check filename, then check PDF content if it's a PDF
+        provider_skill = detect_provider_skill(file_path.name)
+        if not provider_skill and file_path.suffix.lower() == ".pdf":
+            # Extract text preview to detect provider from content
+            content_hints = self._get_pdf_content_hints(file_path)
+            if content_hints:
+                provider_skill = detect_provider_skill(file_path.name, content_hints)
+                if provider_skill:
+                    logger.info(f"Detected provider from PDF content: {provider_skill}")
+
+        if provider_skill == "aetna":
+            logger.info("Detected Aetna EOB - using multi-claim extraction")
+            return self.process_eob_file(str(file_path), dry_run=dry_run)
 
         # Step 1: Vision LLM extraction (direct from image/PDF)
         try:
@@ -600,21 +840,61 @@ try:
                         console.print(f"[red]ERROR[/red] {r['file']}: {r['error']}")
                     else:
                         result = r["result"]
-                        ext = result["extraction"]
-                        status = (
-                            "[green]OK[/green]"
-                            if not result.get("needs_review")
-                            else "[yellow]REVIEW[/yellow]"
-                        )
-                        console.print(f"{status} {r['file']}:")
-                        console.print(f"    Provider: {ext['provider_name']}")
-                        console.print(f"    Patient: {ext['patient_name']}")
-                        console.print(f"    Date: {ext['service_date']}")
-                        console.print(f"    Amount: ${ext['patient_responsibility']:.2f}")
-                        console.print(f"    Category: {ext['category']}")
-                        console.print(f"    Confidence: {ext['confidence_score']:.0%}")
-                        if ext.get("notes"):
-                            console.print(f"    Notes: {ext['notes']}")
+
+                        # Handle EOB results (multi-claim) vs regular receipt results
+                        if result.get("document_type") == "eob":
+                            # EOB with multiple claims
+                            console.print(f"[cyan]EOB[/cyan] {r['file']}:")
+                            console.print(f"    Payer: {result.get('payer_name', 'Unknown')}")
+                            console.print(f"    Category: {result.get('category', 'unknown')}")
+                            console.print(
+                                f"    Confidence: {result.get('confidence_score', 0):.0%}"
+                            )
+                            console.print(
+                                f"    Would upload to: {result.get('would_upload_to', 'N/A')}"
+                            )
+
+                            eligible = result.get("eligible_claims", [])
+                            skipped = result.get("skipped_claims", [])
+
+                            if eligible:
+                                console.print(
+                                    f"    [green]Eligible claims ({len(eligible)}):[/green]"
+                                )
+                                for claim in eligible:
+                                    console.print(
+                                        f"      - {claim['patient_name']} | "
+                                        f"{claim['service_date']} | "
+                                        f"{claim['original_provider']} | "
+                                        f"${claim['patient_responsibility']:.2f}"
+                                    )
+                            if skipped:
+                                console.print(
+                                    f"    [yellow]Skipped (pre-HSA) ({len(skipped)}):[/yellow]"
+                                )
+                                for claim in skipped:
+                                    console.print(
+                                        f"      - {claim['patient_name']} | "
+                                        f"{claim['service_date']} | "
+                                        f"{claim['original_provider']}"
+                                    )
+                        else:
+                            # Regular receipt
+                            ext = result["extraction"]
+                            status = (
+                                "[green]OK[/green]"
+                                if not result.get("needs_review")
+                                else "[yellow]REVIEW[/yellow]"
+                            )
+                            console.print(f"{status} {r['file']}:")
+                            console.print(f"    Provider: {ext['provider_name']}")
+                            console.print(f"    Patient: {ext['patient_name']}")
+                            console.print(f"    Date: {ext['service_date']}")
+                            console.print(f"    Amount: ${ext['patient_responsibility']:.2f}")
+                            console.print(f"    Category: {ext['category']}")
+                            console.print(f"    Confidence: {ext['confidence_score']:.0%}")
+                            if ext.get("notes"):
+                                console.print(f"    Notes: {ext['notes']}")
 
                 if dry_run:
                     console.print(
