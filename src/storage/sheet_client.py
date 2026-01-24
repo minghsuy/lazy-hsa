@@ -12,6 +12,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Safely convert a value to float, returning default on failure."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
 @dataclass
 class ReceiptRecord:
     id: int
@@ -396,10 +406,7 @@ class GSheetsClient:
                 continue
 
             # Check amount match (within tolerance)
-            try:
-                record_amount = float(record.get("Patient Responsibility", 0))
-            except (ValueError, TypeError):
-                continue
+            record_amount = _safe_float(record.get("Patient Responsibility"))
             if abs(record_amount - amount) > tolerance:
                 continue
 
@@ -415,19 +422,14 @@ class GSheetsClient:
         - Skip the non-authoritative linked record to avoid double-counting
         """
         records = self.get_all_records()
-        total = 0.0
-        for record in records:
-            # Skip if not eligible or already reimbursed
-            if record.get("HSA Eligible") != "Yes" or record.get("Reimbursed") == "Yes":
-                continue
-
+        return sum(
+            _safe_float(r.get("Patient Responsibility"))
+            for r in records
+            if r.get("HSA Eligible") == "Yes"
+            and r.get("Reimbursed") != "Yes"
             # Skip non-authoritative records that are linked (avoid double-counting)
-            if record.get("Linked Record ID") and record.get("Is Authoritative") != "Yes":
-                continue
-
-            with contextlib.suppress(ValueError, TypeError):
-                total += float(record.get("Patient Responsibility", 0))
-        return total
+            and not (r.get("Linked Record ID") and r.get("Is Authoritative") != "Yes")
+        )
 
     def get_summary_by_year(self) -> dict[int, dict[str, float]]:
         """Get summary by year, using authoritative amounts for linked records.
@@ -440,39 +442,37 @@ class GSheetsClient:
         summary = {}
 
         for record in records:
+            service_date = record.get("Service Date", "")
+            if not service_date:
+                continue
+
+            # Skip non-authoritative records that are linked (avoid double-counting)
+            if record.get("Linked Record ID") and record.get("Is Authoritative") != "Yes":
+                continue
+
             try:
-                service_date = record.get("Service Date", "")
-                if not service_date:
-                    continue
-
-                # Skip non-authoritative records that are linked (avoid double-counting)
-                if record.get("Linked Record ID") and record.get("Is Authoritative") != "Yes":
-                    continue
-
                 year = int(service_date[:4])
-
-                if year not in summary:
-                    summary[year] = {
-                        "total_billed": 0,
-                        "total_insurance": 0,
-                        "total_responsibility": 0,
-                        "total_reimbursed": 0,
-                        "count": 0,
-                    }
-
-                summary[year]["count"] += 1
-                summary[year]["total_billed"] += float(record.get("Billed Amount", 0) or 0)
-                summary[year]["total_insurance"] += float(record.get("Insurance Paid", 0) or 0)
-                summary[year]["total_responsibility"] += float(
-                    record.get("Patient Responsibility", 0) or 0
-                )
-
-                if record.get("Reimbursed") == "Yes":
-                    summary[year]["total_reimbursed"] += float(
-                        record.get("Reimbursement Amount", 0) or 0
-                    )
             except (ValueError, TypeError):
-                pass
+                continue
+
+            if year not in summary:
+                summary[year] = {
+                    "total_billed": 0,
+                    "total_insurance": 0,
+                    "total_responsibility": 0,
+                    "total_reimbursed": 0,
+                    "count": 0,
+                }
+
+            summary[year]["count"] += 1
+            summary[year]["total_billed"] += _safe_float(record.get("Billed Amount"))
+            summary[year]["total_insurance"] += _safe_float(record.get("Insurance Paid"))
+            summary[year]["total_responsibility"] += _safe_float(
+                record.get("Patient Responsibility")
+            )
+
+            if record.get("Reimbursed") == "Yes":
+                summary[year]["total_reimbursed"] += _safe_float(record.get("Reimbursement Amount"))
 
         return summary
 

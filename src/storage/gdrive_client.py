@@ -198,12 +198,17 @@ class GDriveClient:
             modified_time=datetime.fromisoformat(file["modifiedTime"].replace("Z", "+00:00")),
         )
 
-    def get_folder_path(self, category: str, patient: str, year: int = None) -> str:
-        year = year or datetime.now().year
+    def _current_year(self) -> int:
+        return datetime.now().year
+
+    def get_folder_path(self, category: str, patient: str, year: int | None = None) -> str:
+        year = year or self._current_year()
         return f"{self.root_folder_name}/{year}/{category.title()}/{patient}"
 
-    def get_folder_id_for_receipt(self, category: str, patient: str, year: int = None) -> str:
-        year = year or datetime.now().year
+    def get_folder_id_for_receipt(
+        self, category: str, patient: str, year: int | None = None
+    ) -> str:
+        year = year or self._current_year()
         root_id = self.get_or_create_folder(self.root_folder_name)
         year_id = self.get_or_create_folder(str(year), root_id)
         cat_id = self.get_or_create_folder(category.title(), year_id)
