@@ -207,6 +207,12 @@ class GSheetsClient:
                 worksheet.update_acell(f"{col_letter}1", col_name)
                 logger.info(f"Added new column: {col_name}")
 
+    def _providers_match(self, provider1: str, provider2: str) -> bool:
+        """Check if two provider names match (fuzzy - either contains the other)."""
+        p1 = provider1.lower()
+        p2 = provider2.lower()
+        return p1 in p2 or p2 in p1
+
     def update_record(self, record_id: int, updates: dict[str, Any]) -> bool:
         """Update specific fields of a record by ID.
 
@@ -269,7 +275,6 @@ class GSheetsClient:
         """
         records = self.get_all_records()
         matches = []
-        provider_lower = provider_pattern.lower()
 
         for record in records:
             # Skip if already an EOB or already linked
@@ -278,17 +283,12 @@ class GSheetsClient:
             if record.get("Linked Record ID"):
                 continue
 
-            # Check date match
+            # Check date, patient, and provider match
             if record.get("Service Date") != service_date:
                 continue
-
-            # Check patient match (exact)
             if record.get("Patient") != patient:
                 continue
-
-            # Check provider match (fuzzy - either contains the other)
-            record_provider = (record.get("Provider") or "").lower()
-            if not (provider_lower in record_provider or record_provider in provider_lower):
+            if not self._providers_match(provider_pattern, record.get("Provider") or ""):
                 continue
 
             matches.append(record)
@@ -314,30 +314,23 @@ class GSheetsClient:
         """
         records = self.get_all_records()
 
-        # Find both records
-        eob_record = None
-        statement_record = None
-        for r in records:
-            rid = int(r.get("ID", 0))
-            if rid == eob_id:
-                eob_record = r
-            elif rid == statement_id:
-                statement_record = r
+        # Find both records in a single pass
+        records_by_id = {int(r.get("ID", 0)): r for r in records}
+        eob_record = records_by_id.get(eob_id)
+        statement_record = records_by_id.get(statement_id)
 
         if not eob_record or not statement_record:
             logger.warning(f"Could not find both records: EOB {eob_id}, Statement {statement_id}")
             return False
 
         # Calculate variance for notes
-        try:
+        variance_note = ""
+        with contextlib.suppress(ValueError, TypeError):
             eob_amount = float(eob_record.get("Patient Responsibility", 0))
             stmt_amount = float(statement_record.get("Patient Responsibility", 0))
             variance = eob_amount - stmt_amount
-            variance_note = ""
             if abs(variance) > 0.01:
                 variance_note = f"[Variance: ${variance:+.2f} vs statement]"
-        except (ValueError, TypeError):
-            variance_note = ""
 
         # Update EOB: mark authoritative, link to statement
         eob_notes = eob_record.get("Notes") or ""
@@ -394,24 +387,20 @@ class GSheetsClient:
         """
         records = self.get_all_records()
         matches = []
-        provider_lower = provider.lower()
 
         for record in records:
-            # Check date match
+            # Check date and provider match
             if record.get("Service Date") != service_date:
                 continue
-
-            # Check provider match (fuzzy - either contains the other)
-            record_provider = (record.get("Provider") or "").lower()
-            if not (provider_lower in record_provider or record_provider in provider_lower):
+            if not self._providers_match(provider, record.get("Provider") or ""):
                 continue
 
             # Check amount match (within tolerance)
             try:
                 record_amount = float(record.get("Patient Responsibility", 0))
-                if abs(record_amount - amount) > tolerance:
-                    continue
             except (ValueError, TypeError):
+                continue
+            if abs(record_amount - amount) > tolerance:
                 continue
 
             matches.append(record)

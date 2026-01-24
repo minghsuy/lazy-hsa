@@ -683,30 +683,17 @@ Output JSON only, starting with {{ and ending with }}:"""
                 # Skip if item is not a dict (sometimes LLM returns strings)
                 if not isinstance(item, dict):
                     continue
-                patient_raw = item.get("patient", "")
-                # Map patient names
-                patient = self._map_patient_name(patient_raw)
 
-                # Parse amount (remove $ and convert)
-                amount_str = item.get("your_share", "0").replace("$", "").replace(",", "")
-                try:
-                    amount = float(amount_str)
-                except ValueError:
-                    amount = 0.0
-
-                plan_str = item.get("plan_share", "0").replace("$", "").replace(",", "")
-                try:
-                    plan_paid = float(plan_str)
-                except ValueError:
-                    plan_paid = 0.0
+                amount = self._parse_amount(item.get("your_share"))
+                plan_paid = self._parse_amount(item.get("plan_share"))
 
                 raw_claims.append(
                     {
                         "service_date": statement_date,
-                        "patient_name": patient,
+                        "patient_name": self._map_patient_name(item.get("patient", "")),
                         "original_provider": item.get("provider", "Unknown"),
                         "service_type": "Medical Service",
-                        "billed_amount": amount,  # Use patient responsibility as estimate
+                        "billed_amount": amount,
                         "insurance_paid": plan_paid,
                         "patient_responsibility": amount,
                     }
@@ -715,19 +702,11 @@ Output JSON only, starting with {{ and ending with }}:"""
         # Fallback: try services array for more detail
         if not raw_claims and "services" in parsed:
             for service_group in parsed.get("services", []):
-                patient_raw = service_group.get("patient", "")
-                patient = self._map_patient_name(patient_raw)
+                patient = self._map_patient_name(service_group.get("patient", ""))
 
                 for detail in service_group.get("service_details", []):
-                    # Parse amounts
-                    cost_str = detail.get("your_cost", "0").replace("$", "").replace(",", "")
-                    billed_str = detail.get("amount_billed", "0").replace("$", "").replace(",", "")
-                    try:
-                        cost = float(cost_str)
-                        billed = float(billed_str)
-                    except ValueError:
-                        cost = 0.0
-                        billed = 0.0
+                    cost = self._parse_amount(detail.get("your_cost"))
+                    billed = self._parse_amount(detail.get("amount_billed"))
 
                     raw_claims.append(
                         {
@@ -736,7 +715,7 @@ Output JSON only, starting with {{ and ending with }}:"""
                             "original_provider": detail.get("provider", "Unknown"),
                             "service_type": detail.get("service", "Medical Service"),
                             "billed_amount": billed,
-                            "insurance_paid": billed - cost if billed > cost else 0,
+                            "insurance_paid": max(0, billed - cost),
                             "patient_responsibility": cost,
                         }
                     )
@@ -781,13 +760,16 @@ Output JSON only, starting with {{ and ending with }}:"""
         """Map raw patient names from EOB to family member names."""
         raw_lower = raw_name.lower()
 
-        # Direct mappings for common patterns
-        if "ming" in raw_lower or "self" in raw_lower:
-            return "Ming"
-        if "maxwell" in raw_lower or "son" in raw_lower:
-            return "Maxwell"
-        if "vanessa" in raw_lower or "spouse" in raw_lower or "thi" in raw_lower:
-            return "Vanessa"
+        # Mapping of keywords to family member names
+        keyword_mappings = [
+            (["ming", "self"], "Ming"),
+            (["maxwell", "son"], "Maxwell"),
+            (["vanessa", "spouse", "thi"], "Vanessa"),
+        ]
+
+        for keywords, mapped_name in keyword_mappings:
+            if any(kw in raw_lower for kw in keywords):
+                return mapped_name
 
         # Check if any family member name is contained
         for name in self.family_members:
@@ -803,14 +785,16 @@ Output JSON only, starting with {{ and ending with }}:"""
             return 0.0
         if isinstance(value, int | float):
             return float(value)
-        if isinstance(value, str):
-            # Remove $ and , then convert
-            cleaned = value.replace("$", "").replace(",", "").strip()
-            try:
-                return float(cleaned) if cleaned else 0.0
-            except ValueError:
-                return 0.0
-        return 0.0
+        if not isinstance(value, str):
+            return 0.0
+        # Remove $ and , then convert
+        cleaned = value.replace("$", "").replace(",", "").strip()
+        if not cleaned:
+            return 0.0
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
 
     def extract_from_image(self, image_path: Path) -> ExtractedReceipt:
         """Extract receipt data from a single image."""

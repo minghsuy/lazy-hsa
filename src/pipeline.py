@@ -376,10 +376,9 @@ class HSAReceiptPipeline:
         """Classify extraction confidence level."""
         if score >= self.auto_threshold:
             return "high"
-        elif score >= self.review_threshold:
+        if score >= self.review_threshold:
             return "medium"
-        else:
-            return "low"
+        return "low"
 
     def process_file(
         self,
