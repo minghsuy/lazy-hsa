@@ -207,8 +207,9 @@ class HSAReceiptPipeline:
         # Step 3: Upload file ONCE to EOBs/{category}/
         # Use earliest service date for filename
         earliest_date = min(
-            c.service_date for c in eligible if c.service_date
-        ) or datetime.now().strftime("%Y-%m-%d")
+            (c.service_date for c in eligible if c.service_date),
+            default=datetime.now().strftime("%Y-%m-%d"),
+        )
         year = int(earliest_date[:4])
         file_extension = file_path.suffix.lstrip(".")
         new_filename = f"{earliest_date}_{extraction.payer_name}_EOB.{file_extension}"
