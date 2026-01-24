@@ -71,24 +71,24 @@ class TestDriveInboxWatcherExtractPatientHint:
         return DriveInboxWatcher(
             gdrive_client=MockGDriveClient(),
             process_callback=lambda path, hint: {"processed": True},
-            family_names=["Ming", "Vanessa", "Maxwell"],
+            family_names=["Alice", "Bob", "Charlie"],
         )
 
-    def test_extract_ming_from_filename(self, watcher):
-        """Extract 'Ming' from filename."""
-        assert watcher._extract_patient_hint("CVS_Ming_prescription.pdf") == "Ming"
-        assert watcher._extract_patient_hint("ming_receipt.jpg") == "Ming"
-        assert watcher._extract_patient_hint("MING_eob.pdf") == "Ming"
+    def test_extract_alice_from_filename(self, watcher):
+        """Extract 'Alice' from filename."""
+        assert watcher._extract_patient_hint("CVS_Alice_prescription.pdf") == "Alice"
+        assert watcher._extract_patient_hint("alice_receipt.jpg") == "Alice"
+        assert watcher._extract_patient_hint("ALICE_eob.pdf") == "Alice"
 
-    def test_extract_vanessa_from_filename(self, watcher):
-        """Extract 'Vanessa' from filename."""
-        assert watcher._extract_patient_hint("Amazon Miralax Vanessa.pdf") == "Vanessa"
-        assert watcher._extract_patient_hint("vanessa_surgery_bill.pdf") == "Vanessa"
+    def test_extract_bob_from_filename(self, watcher):
+        """Extract 'Bob' from filename."""
+        assert watcher._extract_patient_hint("Amazon_Miralax_Bob.pdf") == "Bob"
+        assert watcher._extract_patient_hint("bob_surgery_bill.pdf") == "Bob"
 
-    def test_extract_maxwell_from_filename(self, watcher):
-        """Extract 'Maxwell' from filename."""
-        assert watcher._extract_patient_hint("Kaiser_Maxwell_checkup.pdf") == "Maxwell"
-        assert watcher._extract_patient_hint("maxwell_dental.jpg") == "Maxwell"
+    def test_extract_charlie_from_filename(self, watcher):
+        """Extract 'Charlie' from filename."""
+        assert watcher._extract_patient_hint("Kaiser_Charlie_checkup.pdf") == "Charlie"
+        assert watcher._extract_patient_hint("charlie_dental.jpg") == "Charlie"
 
     def test_no_match_returns_none(self, watcher):
         """Return None when no family name in filename."""
@@ -98,25 +98,25 @@ class TestDriveInboxWatcherExtractPatientHint:
 
     def test_case_insensitive_matching(self, watcher):
         """Name matching is case-insensitive."""
-        assert watcher._extract_patient_hint("MING_receipt.pdf") == "Ming"
-        assert watcher._extract_patient_hint("VANESSA_eob.pdf") == "Vanessa"
-        assert watcher._extract_patient_hint("mAxWeLl.jpg") == "Maxwell"
+        assert watcher._extract_patient_hint("ALICE_receipt.pdf") == "Alice"
+        assert watcher._extract_patient_hint("BOB_eob.pdf") == "Bob"
+        assert watcher._extract_patient_hint("cHaRlIe.jpg") == "Charlie"
 
     def test_first_match_wins(self, watcher):
         """When multiple names present, first in family_names list wins."""
-        # Ming is first in the list, so it should be returned
-        assert watcher._extract_patient_hint("Ming_Vanessa_shared.pdf") == "Ming"
+        # Alice is first in the list, so it should be returned
+        assert watcher._extract_patient_hint("Alice_Bob_shared.pdf") == "Alice"
 
     def test_custom_family_names(self):
         """Works with custom family name list."""
         watcher = DriveInboxWatcher(
             gdrive_client=MockGDriveClient(),
             process_callback=lambda path, hint: {"processed": True},
-            family_names=["Alice", "Bob", "Charlie"],
+            family_names=["John", "Jane", "Junior"],
         )
-        assert watcher._extract_patient_hint("alice_receipt.pdf") == "Alice"
-        assert watcher._extract_patient_hint("bob_bill.pdf") == "Bob"
-        assert watcher._extract_patient_hint("Ming_receipt.pdf") is None  # Not in list
+        assert watcher._extract_patient_hint("john_receipt.pdf") == "John"
+        assert watcher._extract_patient_hint("jane_bill.pdf") == "Jane"
+        assert watcher._extract_patient_hint("Alice_receipt.pdf") is None  # Not in list
 
 
 class TestDriveInboxWatcherDryRun:

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-01-24
+
+### Added
+- **Open Source Release**: First public release as `lazy-hsa`
+- **Multi-Claim EOB Extraction**: Extract multiple claims from single Aetna EOB
+  - Different patients and service dates automatically split into separate records
+  - HSA date filtering: claims before HSA start date are automatically skipped
+- **EOB-Statement Linking**: Bidirectional links between EOB claims and provider statements
+  - EOB marked as authoritative for reimbursement calculations
+  - Avoids double-counting in summary totals
+- **Content-Based Provider Detection**: Detect provider from PDF content, not just filename
+- **Text-Only EOB Extraction**: Uses pdfplumber for faster, more reliable EOB parsing
+
+### Changed
+- **CLI renamed**: `hsa` → `lazy-hsa`
+- **Package renamed**: `hsa-receipt-system` → `lazy-hsa`
+- Family members now fully config-driven (no hardcoded names)
+- Default LLM endpoint changed to `localhost:11434` for privacy
+- Added 3 new spreadsheet columns: Original Provider, Linked Record ID, Is Authoritative
+
+### Fixed
+- ValueError when all eligible claims lack service_date (use `min(..., default=...)`)
+
 ## [0.3.0] - 2026-01-22
 
 ### Added
@@ -67,5 +90,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gmail scanning for medical provider emails
 - Drive `_Inbox` watcher for automatic processing
 - CLI commands: `setup`, `process`, `inbox`, `email-scan`, `summary`
-- Family member configuration (Ming, Vanessa, Maxwell)
+- Family member configuration via config file
 - Category routing (Medical, Dental, Vision, Pharmacy, EOBs)

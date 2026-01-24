@@ -1,4 +1,4 @@
-"""Pytest fixtures for HSA Receipt System tests."""
+"""Pytest fixtures for lazy-hsa tests."""
 
 import pytest
 
@@ -6,7 +6,7 @@ import pytest
 @pytest.fixture
 def family_members():
     """Default family members list."""
-    return ["Ming", "Vanessa", "Maxwell"]
+    return ["Alice", "Bob", "Charlie"]
 
 
 @pytest.fixture

@@ -1,48 +1,37 @@
-# HSA Receipt Organization System
+# lazy-hsa
 
-A comprehensive, automated system for organizing HSA-eligible medical receipts for the Weng family.
+A privacy-first, local AI-powered HSA receipt organization system. Your medical data never leaves your machine.
 
-## Overview
+## The Strategy
 
-This system helps you:
-- **Collect** receipts from Gmail, Google Drive _Inbox, provider portals, and paper scans
-- **Process** using Vision LLM extraction (Mistral Small 3 via Ollama)
-- **Organize** into Google Drive with standardized naming
-- **Track** everything in a master spreadsheet for future reimbursement
+**Why "lazy"?** Because the best HSA strategy requires almost no active management:
 
-## Strategy
+1. **Pay all medical expenses out of pocket** - Don't touch your HSA funds
+2. **Invest HSA funds in index funds** - Let compound growth work for decades
+3. **Archive receipts with bulletproof documentation** - This tool handles it
+4. **Reimburse yourself in 25+ years** - When your balance has grown 5-10x tax-free
 
-The HSA reimbursement strategy:
-1. Pay all medical expenses **out of pocket** now
-2. Invest HSA funds in index funds (FZROX/FSKAX)
-3. Archive receipts with bulletproof documentation
-4. Reimburse **decades later** when the balance has compounded tax-free
+This is the [Boglehead HSA strategy](https://www.bogleheads.org/wiki/Health_savings_account) - treat your HSA as a stealth retirement account. The IRS has no time limit on reimbursements, so a $1,000 medical bill today could become a $5,000+ tax-free withdrawal in retirement.
 
-**Important**: Only expenses from **January 1, 2026 onwards** are eligible (HSA start date).
+**lazy-hsa** automates the tedious part: organizing receipts so they're audit-proof decades from now.
 
 ## Features
 
-### Multi-Claim EOB Processing
-The system can extract multiple claims from a single Explanation of Benefits (EOB) document:
-- **Multiple patients** on one EOB (e.g., family members)
-- **Multiple service dates** automatically split into separate records
-- **HSA date filtering** - claims before 2026-01-01 are automatically skipped
-- **Statement linking** - EOB claims auto-link to existing provider statements
-- **Authoritative amounts** - when linked, EOB amount is used for reimbursement calculations
-
-### Duplicate Detection & Linking
-When both a provider statement and EOB exist for the same service:
-- Both records are preserved (for audit trail)
-- Bidirectional links connect related records
-- EOB marked as authoritative (insurance-verified amount)
-- Summary calculations avoid double-counting
+- **Local AI extraction** - Uses Ollama/vLLM with vision models (Mistral Small 3, LLaVA, etc.)
+- **Privacy-first** - All processing happens on your machine. Medical data never hits the cloud.
+- **Multi-claim EOB support** - Extracts multiple claims from insurance EOBs automatically
+- **Provider skills** - Specialized extraction for CVS, Costco, Stanford, Aetna, and more
+- **Google Drive organization** - Automatic folder structure by year/category/patient
+- **Master spreadsheet** - Track everything in Google Sheets for easy reimbursement
+- **Duplicate detection** - Links EOBs to provider statements, avoids double-counting
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Install
 
 ```bash
-cd hsa-receipt-system
+git clone https://github.com/yourusername/lazy-hsa.git
+cd lazy-hsa
 
 # Install with uv (recommended)
 uv sync
@@ -51,92 +40,62 @@ uv sync
 pip install -e .
 ```
 
-### 2. Set Up Google API Credentials
+### 2. Set Up Ollama
+
+```bash
+# Install Ollama (https://ollama.ai)
+ollama pull mistral-small3  # or any vision-capable model
+ollama serve
+```
+
+### 3. Set Up Google APIs
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing
-3. Enable APIs:
-   - Google Drive API
-   - Google Sheets API
-   - Gmail API
-4. Create OAuth 2.0 credentials (Desktop app)
-5. Download and save as `config/credentials/gdrive_credentials.json`
+2. Create a project and enable: Google Drive API, Google Sheets API, Gmail API
+3. Create OAuth 2.0 credentials (Desktop app)
+4. Download as `config/credentials/gdrive_credentials.json`
 
-### 3. Configure
+### 4. Configure
 
 ```bash
-# Copy example config
 cp config/config.example.yaml config/config.yaml
-
-# Edit with your settings
-nano config/config.yaml
+# Edit config.yaml with your family members, HSA start date, etc.
 ```
 
-Update:
-- Family member names (Ming, Vanessa, Maxwell)
-- LLM endpoint settings (default: Ollama at 100.117.74.20:11434)
-
-### 4. Initial Setup
+### 5. Initialize
 
 ```bash
-# Set up folder structure and authenticate
-hsa setup
-```
-
-This will:
-- Prompt for Google OAuth (first time only)
-- Create the full folder structure in Google Drive
-- Create the tracking spreadsheet
-
-### 5. Start Ollama Server (on DGX Spark)
-
-```bash
-# Using Ollama with Mistral Small 3
-ollama serve
-ollama run mistral-small3.1
+lazy-hsa setup
 ```
 
 ## Usage
 
-### Process Files from Google Drive _Inbox
+### Process receipts from Google Drive _Inbox
 
 Drop files into the `_Inbox` folder in Google Drive, then:
 
 ```bash
-# Preview what would happen (dry-run)
-hsa inbox --dry-run
+# Preview what would happen
+lazy-hsa inbox --dry-run
 
-# Process all files in _Inbox
-hsa inbox
+# Process all files
+lazy-hsa inbox
 
 # Continuous watch mode
-hsa inbox --watch
+lazy-hsa inbox --watch
 ```
 
-### Process a Single Receipt
+### Process a single file
 
 ```bash
-# With dry-run to preview
-hsa process --file /path/to/receipt.pdf --dry-run
-
-# Actually process
-hsa process --file /path/to/receipt.pdf
-
-# With patient hint
-hsa process --file /path/to/receipt.pdf --patient Ming
+lazy-hsa process --file /path/to/receipt.pdf
+lazy-hsa process --file /path/to/receipt.pdf --patient Alice
 ```
 
-### Process a Directory
+### View summary
 
 ```bash
-# Process all supported files in a directory
-hsa process --dir /path/to/inbox/
-```
-
-### View Summary
-
-```bash
-hsa summary
+lazy-hsa summary
 ```
 
 Output:
@@ -144,7 +103,7 @@ Output:
 HSA Expense Summary
 ==================================================
 
-2026:
+2024:
   Receipts: 15
   Billed: $3,450.00
   Insurance: $2,760.00
@@ -154,160 +113,85 @@ HSA Expense Summary
 Total Unreimbursed: $690.00
 ```
 
-### Scan Gmail for Medical Receipts
-
-```bash
-hsa email-scan --since 2026-01-01
-```
-
-## Supported File Formats
-
-- PDF (single and multi-page)
-- PNG, JPEG, TIFF, BMP, WebP, GIF
-- **HEIC/HEIF** (iPhone photos) - auto-converted to PNG
-
-## Provider Skills System
-
-The system includes specialized extraction rules for common providers:
-
-| Provider | Auto-Detection | Special Handling |
-|----------|---------------|------------------|
-| **Costco** | "costco" in filename/content | FSA star (*) or "F" markers, calculates tax on eligible items |
-| **CVS** | "cvs" in filename | FSA/HSA eligibility labels, Rx numbers |
-| **Walgreens** | "walgreens" in filename | FSA/HSA markers, copay extraction |
-| **Amazon** | "amazon" in filename | Ship-to address for patient, Grand Total extraction |
-| **Express Scripts** | "express scripts" or "esrx" | Mail-order pharmacy prescriptions |
-| **Sutter/PAMF** | "sutter" or "pamf" | Hospital/clinic bills, Patient Responsibility field |
-| **Aetna** | "aetna" in filename/content | Medical EOB, **multi-claim extraction**, Member Responsibility field |
-| **Stanford** | "stanford" in filename/content | Hospital statements, Patient Responsibility field |
-| **Delta Dental** | "delta dental" in filename | Dental EOB, Patient Pays field |
-| **VSP** | "vsp" in filename | Vision EOB format |
-
-### Tax Calculation
-
-For retail receipts with mixed HSA-eligible and non-eligible items, the system:
-1. Extracts `eligible_subtotal` (sum of FSA/HSA-marked items)
-2. Extracts `receipt_tax` and `receipt_taxable_amount` from receipt
-3. Calculates tax rate: `tax_rate = receipt_tax / receipt_taxable_amount`
-4. Applies proportional tax: `tax_on_eligible = eligible_subtotal * tax_rate`
-
-This ensures accurate HSA reimbursement including sales tax on eligible items.
-
-## Folder Structure (Google Drive)
+## Folder Structure
 
 ```
 HSA_Receipts/
-├── 2026/
+├── 2024/
 │   ├── Medical/
-│   │   ├── Ming/
-│   │   ├── Vanessa/
-│   │   └── Maxwell/
+│   │   ├── Alice/
+│   │   ├── Bob/
+│   │   └── Charlie/
 │   ├── Dental/
-│   │   └── [same structure]
 │   ├── Vision/
-│   │   └── [same structure]
 │   ├── Pharmacy/
-│   │   └── [same structure]
 │   └── EOBs/
 │       ├── Medical/
 │       ├── Dental/
 │       └── Vision/
-├── _Inbox/         # Drop new files here for auto-processing
-├── _Processing/    # (future) Currently being processed
-└── _Rejected/      # (future) Non-HSA-eligible items
+├── _Inbox/         # Drop files here
+├── _Processing/
+└── _Rejected/
 ```
 
-## File Naming Convention
+## Provider Skills
 
-```
-YYYY-MM-DD_Provider_ServiceType_$Amount.pdf
-```
+Built-in extraction rules for common providers:
 
-Examples:
-- `2026-01-15_Stanford_Cardiology_$150.00.pdf`
-- `2026-02-10_CVS_Zepbound_$25.00.pdf`
+| Provider | Detection | Special Handling |
+|----------|-----------|------------------|
+| **Costco** | "costco" in filename | FSA star markers, tax calculation |
+| **CVS** | "cvs" in filename | FSA/HSA labels, Rx numbers |
+| **Walgreens** | "walgreens" in filename | FSA/HSA markers |
+| **Amazon** | "amazon" in filename | Grand Total extraction |
+| **Express Scripts** | "express scripts" | Mail-order pharmacy |
+| **Sutter/PAMF** | "sutter" or "pamf" | Patient Responsibility field |
+| **Stanford** | "stanford" in content | Hospital statements |
+| **Aetna** | "aetna" in content | Multi-claim EOB extraction |
+| **Delta Dental** | "delta dental" | Dental EOB format |
+| **VSP** | "vsp" | Vision EOB format |
 
-For reimbursed files, append `.reimbursed`:
-- `2026-01-15_Stanford_Cardiology_$150.00.reimbursed.pdf`
+### Adding New Providers
 
-## Spreadsheet Columns
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for how to add provider skills.
 
-The master tracking spreadsheet includes:
+## Supported Formats
 
-| Column | Description |
-|--------|-------------|
-| ID | Auto-incrementing record ID |
-| Date Added | When the record was created |
-| Service Date | Date of medical service |
-| Provider | Provider name (for EOBs: the insurance company) |
-| Original Provider | For EOBs: who rendered the service |
-| Patient | Ming, Vanessa, or Maxwell |
-| Patient Responsibility | Amount owed (use this for reimbursement) |
-| Linked Record ID | Links EOB ↔ Statement bidirectionally |
-| Is Authoritative | "Yes" for EOBs when linked (use this amount) |
+- PDF (single and multi-page)
+- PNG, JPEG, TIFF, BMP, WebP, GIF
+- HEIC/HEIF (iPhone photos)
 
-## Components
+## Privacy & Security
 
-| Component | Purpose |
-|-----------|---------|
-| `src/pipeline.py` | Main orchestration and CLI |
-| `src/processors/llm_extractor.py` | Vision LLM extraction with provider skills, EOB multi-claim extraction |
-| `src/extractors/gmail_extractor.py` | Gmail API receipt extraction |
-| `src/watchers/inbox_watcher.py` | Google Drive _Inbox folder watcher |
-| `src/storage/gdrive_client.py` | Google Drive file management, EOB folder routing |
-| `src/storage/sheet_client.py` | Google Sheets tracking, duplicate detection, record linking |
+- **All AI processing is local** - Ollama runs on your machine
+- **Medical data stays on your machine** - Only file organization goes to Google Drive
+- **OAuth tokens are local** - Stored in `config/credentials/` (gitignored)
+- **No cloud AI services** - No OpenAI, Anthropic, or other cloud APIs for extraction
+
+## Requirements
+
+- Python 3.12+
+- Ollama with a vision-capable model
+- Google Cloud project with Drive/Sheets/Gmail APIs enabled
+- GPU recommended for faster extraction (but CPU works)
 
 ## Development
 
-### Running with Poppler (for PDF processing)
-
 ```bash
-# macOS
-brew install poppler
-PATH="/opt/homebrew/opt/poppler/bin:$PATH" uv run hsa inbox
-```
+# Install dev dependencies
+uv sync --dev
 
-### Running Tests
+# Run tests
+uv run pytest
 
-```bash
-uv run pytest tests/
-```
-
-### Re-authenticating Google APIs
-
-Delete the token file to force re-auth:
-```bash
-rm config/credentials/gdrive_token.json
-rm config/credentials/gmail_token.json
-rm config/credentials/gsheets_token.json
-```
-
-### Testing Extraction Directly
-
-```bash
-uv run python src/processors/llm_extractor.py test_receipts/receipt.pdf
-```
-
-## Troubleshooting
-
-### "Ollama connection refused"
-Ensure Ollama is running on the configured host:
-```bash
-curl http://100.117.74.20:11434/api/tags
-```
-
-### "Google OAuth error"
-Delete `config/credentials/*_token.json` and re-authenticate.
-
-### Low confidence extractions
-Check the `confidence` column in the spreadsheet. Values below 70% may need manual review.
-
-### HEIC files not processing
-Ensure pillow-heif is installed:
-```bash
-uv add pillow-heif
+# Lint
+uv run ruff check src/
 ```
 
 ## License
 
-Private - Weng Family Use Only
+MIT License - See [LICENSE](LICENSE)
+
+## Acknowledgments
+
+Inspired by the [Bogleheads community](https://www.bogleheads.org/) and the FIRE movement's approach to HSA optimization.

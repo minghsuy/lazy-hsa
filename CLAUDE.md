@@ -1,27 +1,34 @@
-# HSA Receipt System - Claude Code Context
+# lazy-hsa - Claude Code Context
 
 ## Project Overview
-Automated HSA (Health Savings Account) receipt organization system. Strategy: pay medical expenses out-of-pocket now, archive receipts with bulletproof documentation, invest HSA funds tax-free, reimburse decades later when balance has compounded.
+Local AI-powered HSA receipt organization system. Strategy: pay medical expenses out-of-pocket, archive receipts, invest HSA funds tax-free, reimburse decades later when balance has compounded.
 
-## Family
-- **Ming** (primary account holder)
-- **Vanessa** (spouse)
-- **Maxwell** (dependent, age 8)
+## Family Configuration
+Family members are configured in `config/config.yaml`:
+```yaml
+family:
+  - name: "Alice"    # Primary account holder
+    role: "primary"
+  - name: "Bob"      # Spouse
+    role: "spouse"
+  - name: "Charlie"  # Dependent
+    role: "dependent"
+```
 
-HSA effective date: 2026-01-01
+Default fallback (if not configured): `["Alice", "Bob", "Charlie"]`
 
 ## Architecture
 
 ### Vision LLM Extraction
-- Uses Mistral Small 3 (14B) via Ollama on DGX Spark at `100.117.74.20:11434`
+- Uses local Ollama/vLLM with vision models (Mistral Small 3, LLaVA, etc.)
+- Default endpoint: `http://localhost:11434/v1`
 - Direct image-to-JSON extraction (no separate OCR step)
-- Prompt constrains patient_name to exactly one of: Ming, Vanessa, Maxwell
+- Prompt constrains patient_name to configured family members
 
 ### Text-Only EOB Extraction
-- Uses gpt-oss:20b for Aetna EOBs (faster, more reliable JSON output)
-- Extracts text via pdfplumber, no vision model needed
+- Uses text extraction via pdfplumber for EOBs (faster, more reliable)
 - Supports multi-claim extraction (multiple patients/dates per EOB)
-- HSA date filtering: skips claims with service_date < 2026-01-01
+- HSA date filtering: skips claims with service_date before HSA start
 
 ### Google APIs
 - **Drive**: Stores receipts in `HSA_Receipts/{year}/{category}/{patient}/`
@@ -31,11 +38,11 @@ HSA effective date: 2026-01-01
 ### Folder Structure
 ```
 HSA_Receipts/
-├── 2026/
+├── 2024/
 │   ├── Medical/
-│   │   ├── Ming/
-│   │   ├── Vanessa/
-│   │   └── Maxwell/
+│   │   ├── Alice/
+│   │   ├── Bob/
+│   │   └── Charlie/
 │   ├── Dental/
 │   ├── Vision/
 │   ├── Pharmacy/
@@ -44,30 +51,30 @@ HSA_Receipts/
 │       ├── Dental/
 │       └── Vision/
 ├── _Inbox/      # Drop files here for auto-processing
-├── _Processing/ # (future) Files being processed
-└── _Rejected/   # (future) Files that failed processing
+├── _Processing/ # Files being processed
+└── _Rejected/   # Files that failed processing
 ```
 
 ## CLI Commands
 ```bash
 # Initial setup
-hsa setup
+lazy-hsa setup
 
 # Process single file or directory
-hsa process --file receipt.pdf
-hsa process --dir ./receipts/ --patient Vanessa
-hsa process --file costco_receipt.png --dry-run  # Preview without committing
+lazy-hsa process --file receipt.pdf
+lazy-hsa process --dir ./receipts/ --patient Alice
+lazy-hsa process --file costco_receipt.png --dry-run
 
 # Process files from Google Drive _Inbox
-hsa inbox              # One-time check
-hsa inbox --watch      # Continuous polling
-hsa inbox --dry-run    # Preview extraction without modifying Drive/Sheets
+lazy-hsa inbox              # One-time check
+lazy-hsa inbox --watch      # Continuous polling
+lazy-hsa inbox --dry-run    # Preview extraction
 
 # Scan Gmail for medical emails
-hsa email-scan --since 2026-01-01
+lazy-hsa email-scan --since 2024-01-01
 
 # View summary
-hsa summary
+lazy-hsa summary
 ```
 
 ## Key Files
@@ -79,44 +86,9 @@ hsa summary
 - `src/extractors/gmail_extractor.py` - Gmail medical email extraction
 - `config/config.yaml` - All configuration (LLM endpoint, family members, etc.)
 
-## What's Complete
-- [x] Vision LLM extraction with Mistral Small 3
-- [x] Google Drive folder structure and upload
-- [x] Google Sheets master index tracking
-- [x] Gmail scanning for medical provider emails
-- [x] Drive _Inbox watcher (drop files → auto-process → delete from inbox)
-- [x] Patient name detection from filenames (e.g., "CVS Vanessa prescription.pdf")
-- [x] LLM prompt constrains patient to family member names only
-- [x] Duplicate detection (same provider + date + amount)
-- [x] Dry-run mode for inbox and process commands
-- [x] Provider-specific extraction skills (see below)
-- [x] **Multi-claim EOB extraction**: Extract multiple claims from single Aetna EOB (v0.4.0)
-- [x] **HSA date filtering**: Skip claims with service_date < 2026-01-01 (v0.4.0)
-- [x] **EOB folder routing**: EOBs go to `EOBs/{category}/` instead of patient folders (v0.4.0)
-- [x] **Statement linking**: EOB claims auto-link to matching provider statements (v0.4.0)
-- [x] **Authoritative amounts**: Summary uses EOB amount when linked (v0.4.0)
-- [x] **Content-based provider detection**: Uses pdfplumber to detect provider from PDF content (v0.4.0)
-
-## What's Left (Phase 5: Polish & Automation)
-
-### High Priority
-- [ ] **Error recovery**: Move failed files to `_Rejected/` with error notes
-- [ ] **Multi-page PDF handling**: Currently only processes first page, may miss data on subsequent pages
-
-### Medium Priority
-- [ ] **Reimbursement tracking CLI**: `hsa reimburse --id 5 --amount 100.00 --date 2026-12-01`
-- [ ] **Annual summary export**: Generate PDF/Excel report for tax records
-- [ ] **Provider name normalization**: "Sutter Health" vs "SUTTER HEALTH SACRAMENTO" should match
-
-### Low Priority / Future
-- [ ] **iOS Shortcuts integration**: Via Tailscale to home server
-- [ ] **Scheduled Gmail scanning**: Cron job or systemd timer
-- [ ] **OCR fallback**: For when vision LLM fails (very low confidence)
-- [ ] **Receipt image enhancement**: Deskew, contrast adjustment before LLM
-
 ## Provider Skills System
 
-Provider-specific extraction prompts activate automatically based on filename patterns. Defined in `src/processors/llm_extractor.py`:
+Provider-specific extraction prompts activate automatically based on filename/content patterns. Defined in `src/processors/llm_extractor.py`:
 
 | Provider | Triggers | Special Handling |
 |----------|----------|------------------|
@@ -126,10 +98,10 @@ Provider-specific extraction prompts activate automatically based on filename pa
 | **Amazon** | "amazon" | Extracts Grand Total directly (includes tax) |
 | **Express Scripts** | "express scripts", "esrx" | Mail-order pharmacy, medication name extraction |
 | **Sutter** | "sutter", "pamf" | Hospital/clinic bills, Patient Responsibility field |
-| **Aetna** | "aetna" (filename or content) | Medical EOB, **multi-claim extraction**, text-only via gpt-oss:20b |
+| **Aetna** | "aetna" (filename or content) | Medical EOB, **multi-claim extraction**, text-only via pdfplumber |
 | **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" | Vision EOB format |
-| **Stanford** | "stanford", "stanford health" | Hospital statements, Patient Responsibility, Service Date |
+| **Stanford** | "stanford" (content) | Hospital statements, Patient Responsibility field |
 
 ### Tax Calculation (Retail Receipts)
 For retail receipts (Costco, CVS, etc.), the system:
@@ -140,23 +112,18 @@ For retail receipts (Costco, CVS, etc.), the system:
 
 IRS allows HSA reimbursement of sales tax on eligible items.
 
-### Supported Image Formats
-- PDF, PNG, JPG, JPEG, GIF, WEBP, TIFF, BMP
-- **HEIC/HEIF** (iPhone photos) - converted to PNG before processing
-
 ### Adding New Provider Skills
 1. Add skill to `PROVIDER_SKILLS` dict in `llm_extractor.py`
 2. Add pattern to `provider_patterns` in `detect_provider_skill()`
-3. Test with `hsa inbox --dry-run` before committing
-
-## Removed Features
-- **Amazon HSA scraper**: Removed because Amazon's 2FA/CAPTCHA/passkey requirements make automation impractical. Manual invoice download is simpler.
+3. Test with `lazy-hsa inbox --dry-run` before committing
 
 ## Development Notes
 
 ### Running with Poppler (for PDF processing)
 ```bash
-PATH="/opt/homebrew/opt/poppler/bin:$PATH" uv run hsa inbox
+# macOS
+brew install poppler
+PATH="/opt/homebrew/opt/poppler/bin:$PATH" uv run lazy-hsa inbox
 ```
 
 ### Re-authenticating Google APIs
@@ -174,4 +141,4 @@ uv run python src/processors/llm_extractor.py test_receipts/receipt.pdf
 
 ## Config Location
 - Credentials: `config/credentials/` (gitignored)
-- Config: `config/config.yaml`
+- Config: `config/config.yaml` (gitignored, copy from config.example.yaml)

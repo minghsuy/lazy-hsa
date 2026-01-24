@@ -1,31 +1,28 @@
-# HSA Receipt Organization System - Comprehensive Guide
-
-**Last Updated:** January 3, 2026
-**HSA Start Date:** January 1, 2026
-**Provider:** Fidelity HSA
-
----
+# lazy-hsa - Setup & Usage Guide
 
 ## Strategy
 
-- **Pay out of pocket** for all medical expenses now
-- **Archive receipts** with bulletproof documentation
-- **Invest HSA funds** in FZROX/FSKAX index funds
-- **Reimburse decades later** when balance has compounded tax-free
-- **No time limit** on reimbursement (post-HSA establishment)
+The Boglehead HSA optimization strategy:
 
-> **Critical**: Only expenses incurred **on or after January 1, 2026** are reimbursable.
+1. **Pay out of pocket** for all medical expenses now
+2. **Archive receipts** with bulletproof documentation
+3. **Invest HSA funds** in low-cost index funds (FZROX, FSKAX, etc.)
+4. **Reimburse decades later** when balance has compounded tax-free
+5. **No time limit** on reimbursement (for expenses after HSA establishment)
+
+> **Critical**: Only expenses incurred **after your HSA start date** are reimbursable.
 
 ---
 
 ## Data Sources
 
-| Source | Email | Providers |
-|--------|-------|-----------|
-| Ming Gmail | [your@gmail.com] | Sutter Health, CVS, Express Scripts |
-| Ming iCloud | [your@icloud.com] | Stanford Health |
-| Wife Gmail | [wife@gmail.com] | Sutter Health, CVS |
-| Wife iCloud | [wife@icloud.com] | Stanford Health |
+| Source | Examples |
+|--------|----------|
+| Provider portals | Sutter Health, Stanford, Kaiser, etc. |
+| Insurance EOBs | Aetna, BCBS, Cigna, UnitedHealthcare |
+| Pharmacy | CVS, Walgreens, Express Scripts |
+| Email attachments | Bills, receipts, EOBs sent via email |
+| Paper receipts | Scanned via phone or scanner |
 
 ---
 
@@ -33,16 +30,19 @@
 
 ```
 HSA_Receipts/
-├── 2026/
+├── 2024/
 │   ├── Medical/
-│   │   ├── Ming/
-│   │   ├── [Wife]/
-│   │   └── [Son]/
+│   │   ├── Alice/
+│   │   ├── Bob/
+│   │   └── Charlie/
 │   ├── Dental/
 │   ├── Vision/
 │   ├── Pharmacy/
 │   └── EOBs/
-├── _Inbox/
+│       ├── Medical/
+│       ├── Dental/
+│       └── Vision/
+├── _Inbox/       # Drop files here
 ├── _Processing/
 └── _Rejected/
 ```
@@ -56,33 +56,34 @@ YYYY-MM-DD_Provider_ServiceType_$Amount.pdf
 ```
 
 Examples:
-- `2026-01-15_Stanford_Cardiology_$150.00.pdf`
-- `2026-02-10_CVS_Zepbound_$25.00.pdf`
+- `2024-03-15_Stanford_Cardiology_$150.00.pdf`
+- `2024-04-10_CVS_Prescription_$25.00.pdf`
 
-For reimbursed: append `.reimbursed`
+For reimbursed files: append `.reimbursed`
 
 ---
 
-## Processing Pipeline (on DGX Spark)
+## Processing Pipeline
 
 ```
-Sources → PaddleOCR (GPU) → Local LLM → Google Drive + Sheet
+Sources → Local LLM (Ollama) → Google Drive + Sheets
 ```
 
 **Stack:**
-- OCR: PaddleOCR 3.0 (GPU)
-- LLM: Llama 3.3 70B or Qwen2.5-VL 72B via vLLM
+- LLM: Mistral Small 3, LLaVA, or any vision-capable model
+- Runtime: Ollama or vLLM
 - Storage: Google Drive API
 - Tracking: Google Sheets
 
 ---
 
-## Brother Scanner Setup (HL-3290CDW)
+## Scanner Setup (Optional)
 
-1. Access `http://<printer-ip>`
-2. **Scan** → **Scan to E-mail**
-3. SMTP: `smtp.gmail.com:587` + STARTTLS
-4. Destination: `receipts.weng@gmail.com`
+If you have a network scanner:
+
+1. Configure scan-to-email
+2. Set destination to a dedicated receipts email
+3. Configure Gmail label/filter to organize incoming scans
 
 ---
 
@@ -90,11 +91,11 @@ Sources → PaddleOCR (GPU) → Local LLM → Google Drive + Sheet
 
 **Weekly (15 min):**
 - Check `_Inbox` for new items
-- Run processing pipeline
+- Run `lazy-hsa inbox`
 - Review low-confidence extractions
 
 **Monthly (30 min):**
-- Download from all provider portals
+- Download from provider portals
 - Reconcile tracking sheet with EOBs
 
 **Quarterly:**
@@ -105,52 +106,69 @@ Sources → PaddleOCR (GPU) → Local LLM → Google Drive + Sheet
 
 ## HSA Eligibility Quick Reference
 
-**✅ Always Eligible:**
+**Always Eligible:**
 - Doctor visits, hospital, surgery, labs
 - Prescription medications
-- Dental (cleanings, fillings, crowns, ortho)
+- Dental (cleanings, fillings, crowns, orthodontia)
 - Vision (exams, glasses, contacts, LASIK)
 - OTC medications (post-CARES Act)
+- Mental health services
+- Physical therapy
 
-**❌ NOT Eligible:**
+**NOT Eligible:**
 - Cosmetic surgery (unless medically necessary)
 - Gym memberships
 - Teeth whitening
-- General wellness vitamins
+- General wellness vitamins (unless prescribed)
+- Insurance premiums (with some exceptions)
 
 ---
 
 ## Quick Start Commands
 
 ```bash
-cd ~/Documents/Github/hsa-receipt-system
-
-# Setup
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+# Clone and install
+git clone https://github.com/yourusername/lazy-hsa.git
+cd lazy-hsa
+uv sync  # or pip install -e .
 
 # Configure
 cp config/config.example.yaml config/config.yaml
-# Edit with your details
+# Edit config.yaml with your family members, HSA start date, etc.
 
 # Initial setup (creates folders + spreadsheet)
-python src/pipeline.py setup --family "Ming" "WifeName" "SonName"
+lazy-hsa setup
 
 # Process receipts
-python src/pipeline.py dry-run --file /path/to/receipt.pdf
-python src/pipeline.py process --dir /path/to/inbox/
+lazy-hsa inbox --dry-run    # Preview
+lazy-hsa inbox              # Process all
+lazy-hsa process --file /path/to/receipt.pdf
 
 # View summary
-python src/pipeline.py summary
+lazy-hsa summary
 ```
 
 ---
 
-## TODO: Fill In
+## Troubleshooting
 
-1. Wife's name
-2. Son's name
-3. Gmail addresses (both)
-4. iCloud addresses (both)
-5. Brother printer IP
+### "Ollama connection refused"
+```bash
+# Start Ollama
+ollama serve
+
+# Verify it's running
+curl http://localhost:11434/api/tags
+```
+
+### "Google OAuth error"
+```bash
+# Delete tokens to re-authenticate
+rm config/credentials/*_token.json
+lazy-hsa setup
+```
+
+### Low confidence extractions
+- Check the spreadsheet's "Confidence" column
+- Values below 70% may need manual review
+- Consider adding a provider skill for common formats

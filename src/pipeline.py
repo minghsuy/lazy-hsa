@@ -61,7 +61,7 @@ class HSAReceiptPipeline:
         # Family member names (for folder mapping)
         family = self.config.get("family", [])
         self.family_names = (
-            [m.get("name", "Unknown") for m in family] if family else ["Ming", "Wife", "Son"]
+            [m.get("name", "Unknown") for m in family] if family else ["Alice", "Bob", "Charlie"]
         )
 
         # Initialize components (lazy)
@@ -82,7 +82,7 @@ class HSAReceiptPipeline:
         if extracted_name in self.family_names:
             return extracted_name
 
-        # Fallback: fuzzy match (in case LLM returned something like "Vanessa Lee")
+        # Fallback: fuzzy match (in case LLM returned something like "Alice Smith")
         extracted_lower = extracted_name.lower()
         for family_name in self.family_names:
             if family_name.lower() in extracted_lower:
@@ -593,7 +593,7 @@ class HSAReceiptPipeline:
         """Initial setup: create folder structure and spreadsheet."""
         family = self.config.get("family", [])
         family_names = family_members or (
-            [m.get("name", "Unknown") for m in family] if family else ["Ming", "Wife", "Son"]
+            [m.get("name", "Unknown") for m in family] if family else ["Alice", "Bob", "Charlie"]
         )
 
         logger.info("Setting up HSA receipt system...")

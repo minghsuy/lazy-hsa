@@ -1,17 +1,18 @@
-# HSA Receipt System Configuration
+# lazy-hsa Configuration
 # Copy to config.yaml and fill in your values
 
 # =============================================================================
-# LLM Settings (Mistral Small 3 with Vision)
+# LLM Settings (Vision-enabled model for receipt extraction)
 # =============================================================================
 llm:
   # Provider: "ollama" or "vllm" (both use OpenAI-compatible API)
   provider: "ollama"
 
   # Model name (as shown in `ollama list` or vLLM)
+  # Recommended: mistral-small3 (has vision), llava, or any vision-capable model
   model: "mistral-small3"
 
-  # API endpoint
+  # API endpoint (localhost for privacy - your data never leaves your machine)
   # Ollama default: http://localhost:11434/v1
   # vLLM default: http://localhost:8000/v1
   api_base: "http://localhost:11434/v1"
@@ -39,42 +40,39 @@ google_sheets:
   worksheet_name: "Receipts"
 
 # =============================================================================
-# Email Accounts
+# Email Accounts (Optional - for scanning medical emails)
 # =============================================================================
 email:
-  ming:
+  primary:
     gmail:
-      address: "YOUR_GMAIL@gmail.com"
+      address: "your-email@gmail.com"
       # Uses OAuth, no password needed
     icloud:
-      address: "YOUR_ICLOUD@icloud.com"
+      address: "your-email@icloud.com"
       app_password: "xxxx-xxxx-xxxx-xxxx"  # Generate at appleid.apple.com
       imap_server: "imap.mail.me.com"
-  wife:
-    gmail:
-      address: "WIFE_GMAIL@gmail.com"
-    icloud:
-      address: "WIFE_ICLOUD@icloud.com"
-      app_password: "xxxx-xxxx-xxxx-xxxx"
-      imap_server: "imap.mail.me.com"
+  # Add more accounts as needed:
+  # spouse:
+  #   gmail:
+  #     address: "spouse@gmail.com"
 
 # =============================================================================
-# Scanner Email Inbox
+# Scanner Email Inbox (Optional - for receiving scanned receipts)
 # =============================================================================
 scanner:
-  monitor_email: "receipts.weng@gmail.com"
+  monitor_email: "your-receipts@gmail.com"
   gmail_label: "Scanner"
 
 # =============================================================================
-# Family Members
+# Family Members (Names used for folder structure and patient matching)
 # =============================================================================
 family:
-  - name: "Ming"
-    role: "primary"
-  - name: "WIFE_NAME"
+  - name: "Alice"
+    role: "primary"      # HSA account holder
+  - name: "Bob"
     role: "spouse"
-  - name: "SON_NAME"
-    role: "dependent"
+  - name: "Charlie"
+    role: "dependent"    # Children, etc.
 
 # =============================================================================
 # Provider Search Patterns (for email filtering)
@@ -85,22 +83,32 @@ providers:
     - "sutterhealth"
     - "stanford"
     - "stanfordhealthcare"
+    - "kaiser"
     - "aetna"
+    - "cigna"
+    - "unitedhealthcare"
+    - "bluecross"
+    - "anthem"
   dental:
     - "delta dental"
     - "deltadentalins"
+    - "metlife dental"
   vision:
     - "vsp"
     - "visionserviceplan"
+    - "eyemed"
   pharmacy:
     - "cvs"
+    - "walgreens"
     - "express-scripts"
     - "expressscripts"
     - "caremark"
+    - "optumrx"
   hsa_eligible_retail:
     - "amazon"
     - "fsa store"
     - "hsastore"
+    - "costco"
 
 # =============================================================================
 # File Naming
@@ -126,8 +134,10 @@ processing:
 # HSA Settings
 # =============================================================================
 hsa:
-  start_date: "2026-01-01"
-  provider: "Fidelity"
+  # IMPORTANT: Only expenses AFTER this date are HSA-eligible
+  # Set this to when your HSA was established
+  start_date: "2024-01-01"
+  provider: "Fidelity"  # or "HSA Bank", "Lively", etc.
 
 # =============================================================================
 # Backup Settings (optional)

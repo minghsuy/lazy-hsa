@@ -25,7 +25,7 @@ class TestDetectProviderSkill:
     def test_detect_cvs(self):
         """Detect CVS from filename."""
         assert detect_provider_skill("cvs_prescription.pdf") == "cvs"
-        assert detect_provider_skill("CVS_Ming_rx.jpg") == "cvs"
+        assert detect_provider_skill("CVS_Alice_rx.jpg") == "cvs"
 
     def test_detect_walgreens(self):
         """Detect Walgreens from filename."""
@@ -87,9 +87,9 @@ class TestGetExtractionPrompt:
     def test_default_family_members(self):
         """Uses default family members when none provided."""
         prompt = get_extraction_prompt()
-        assert "Ming" in prompt
-        assert "Vanessa" in prompt
-        assert "Maxwell" in prompt
+        assert "Alice" in prompt
+        assert "Bob" in prompt
+        assert "Charlie" in prompt
 
     def test_includes_provider_skill(self):
         """Provider skill text is appended to prompt."""
@@ -113,7 +113,7 @@ class TestExtractedReceiptGenerateFilename:
             provider_name="CVS Pharmacy",
             service_date="2026-01-15",
             service_type="Prescription",
-            patient_name="Ming",
+            patient_name="Alice",
             billed_amount=25.00,
             insurance_paid=0,
             patient_responsibility=25.00,
@@ -152,7 +152,7 @@ class TestExtractedReceiptGenerateFilename:
             provider_name="Dr. Smith's Office!",
             service_date="2026-01-15",
             service_type="Check-up (annual)",
-            patient_name="Ming",
+            patient_name="Alice",
             billed_amount=100.00,
             insurance_paid=80.00,
             patient_responsibility=20.00,
@@ -248,7 +248,7 @@ class TestVisionExtractorBuildReceipt:
             "provider_name": "Costco",
             "service_date": "2026-01-04",
             "service_type": "4x Salonpas @$15.99",
-            "patient_name": "Ming",
+            "patient_name": "Alice",
             "eligible_subtotal": 63.96,  # 4 x 15.99
             "receipt_tax": 18.28,
             "receipt_taxable_amount": 200.29,
@@ -275,7 +275,7 @@ class TestVisionExtractorBuildReceipt:
             "provider_name": "Target",
             "service_date": "2026-01-04",
             "service_type": "Groceries",
-            "patient_name": "Ming",
+            "patient_name": "Alice",
             "eligible_subtotal": 0,
             "receipt_tax": 5.00,
             "receipt_taxable_amount": 50.00,
@@ -296,7 +296,7 @@ class TestVisionExtractorBuildReceipt:
             "provider_name": "Sutter Health",
             "service_date": "2026-01-10",
             "service_type": "Office Visit",
-            "patient_name": "Vanessa",
+            "patient_name": "Bob",
             "eligible_subtotal": 0,
             "receipt_tax": 0,
             "receipt_taxable_amount": 0,
@@ -320,7 +320,7 @@ class TestVisionExtractorBuildReceipt:
             "provider_name": "CVS",
             "service_date": "2026-01-04",
             "service_type": ["Prescription A", "Prescription B"],
-            "patient_name": "Ming",
+            "patient_name": "Alice",
             "eligible_subtotal": 20.00,
             "receipt_tax": 0,
             "receipt_taxable_amount": 0,

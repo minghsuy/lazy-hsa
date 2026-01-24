@@ -106,7 +106,7 @@ class GDriveClient:
         self, year: int | None = None, family_members: list[str] | None = None
     ) -> dict[str, str]:
         year = year or datetime.now().year
-        family_members = family_members or ["Ming", "Vanessa", "Maxwell"]
+        family_members = family_members or ["Alice", "Bob", "Charlie"]
         folder_ids = {}
 
         root_id = self.get_or_create_folder(self.root_folder_name)
@@ -248,6 +248,6 @@ if __name__ == "__main__":
         token = sys.argv[3] if len(sys.argv) > 3 else "config/credentials/gdrive_token.json"
         client = GDriveClient(credentials_file=creds, token_file=token)
         folders = client.setup_folder_structure(
-            year=2026, family_members=["Ming", "Vanessa", "Maxwell"]
+            year=2026, family_members=["Alice", "Bob", "Charlie"]
         )
         print(f"Created {len(folders)} folders")

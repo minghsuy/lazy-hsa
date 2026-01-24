@@ -37,7 +37,7 @@ class DriveInboxWatcher:
         self.gdrive = gdrive_client
         self.process_callback = process_callback
         self.inbox_folder_name = inbox_folder_name
-        self.family_names = family_names or ["Ming", "Vanessa", "Maxwell"]
+        self.family_names = family_names or ["Alice", "Bob", "Charlie"]
         self.dry_run = dry_run
         self._inbox_folder_id = None
         self._processed_files = set()  # Track processed file IDs
@@ -214,8 +214,8 @@ class DriveInboxWatcher:
         """Extract patient name hint from filename if family name is present.
 
         Examples:
-            "Amazon Miralax Vanessa Surgery.pdf" -> "Vanessa"
-            "CVS_Ming_prescription.jpg" -> "Ming"
+            "Amazon_Miralax_Bob.pdf" -> "Bob"
+            "CVS_Alice_prescription.jpg" -> "Alice"
             "receipt.pdf" -> None
         """
         filename_lower = filename.lower()

@@ -463,80 +463,6 @@ wheels = [
 ]
 
 [[package]]
-name = "hsa-receipt-system"
-version = "0.4.0"
-source = { editable = "." }
-dependencies = [
-    { name = "beautifulsoup4" },
-    { name = "click" },
-    { name = "email-validator" },
-    { name = "google-api-python-client" },
-    { name = "google-auth" },
-    { name = "google-auth-httplib2" },
-    { name = "google-auth-oauthlib" },
-    { name = "gspread" },
-    { name = "imapclient" },
-    { name = "lxml" },
-    { name = "openai" },
-    { name = "openpyxl" },
-    { name = "pandas" },
-    { name = "pdf2image" },
-    { name = "pdfplumber" },
-    { name = "pillow" },
-    { name = "pillow-heif" },
-    { name = "playwright" },
-    { name = "pyasn1" },
-    { name = "pypdf" },
-    { name = "python-dateutil" },
-    { name = "pyyaml" },
-    { name = "rich" },
-    { name = "urllib3" },
-    { name = "watchdog" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "beautifulsoup4", specifier = ">=4.12.0" },
-    { name = "click", specifier = ">=8.1.0" },
-    { name = "email-validator", specifier = ">=2.2.0" },
-    { name = "google-api-python-client", specifier = ">=2.150.0" },
-    { name = "google-auth", specifier = ">=2.36.0" },
-    { name = "google-auth-httplib2", specifier = ">=0.2.0" },
-    { name = "google-auth-oauthlib", specifier = ">=1.2.0" },
-    { name = "gspread", specifier = ">=6.1.0" },
-    { name = "imapclient", specifier = ">=3.0.0" },
-    { name = "lxml", specifier = ">=5.3.0" },
-    { name = "openai", specifier = ">=1.50.0" },
-    { name = "openpyxl", specifier = ">=3.1.0" },
-    { name = "pandas", specifier = ">=2.2.0" },
-    { name = "pdf2image", specifier = ">=1.17.0" },
-    { name = "pdfplumber", specifier = ">=0.11.9" },
-    { name = "pillow", specifier = ">=11.0.0" },
-    { name = "pillow-heif", specifier = ">=1.1.1" },
-    { name = "playwright", specifier = ">=1.49.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0.0" },
-    { name = "pyasn1", specifier = ">=0.6.2" },
-    { name = "pypdf", specifier = ">=6.6.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
-    { name = "python-dateutil", specifier = ">=2.9.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rich", specifier = ">=13.9.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
-    { name = "urllib3", specifier = ">=2.6.3" },
-    { name = "watchdog", specifier = ">=6.0.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -679,6 +605,80 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8c/3e/e7e06743294eea2cf02ced6aa0ff2ad237367394e37a0e2b4a1108c67a36/jiter-0.12.0-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d96b264ab7d34bbb2312dedc47ce07cd53f06835eacbc16dde3761f47c3a9e7f", size = 338537, upload-time = "2025-11-09T20:49:20.317Z" },
     { url = "https://files.pythonhosted.org/packages/2f/9c/6753e6522b8d0ef07d3a3d239426669e984fb0eba15a315cdbc1253904e4/jiter-0.12.0-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c24e864cb30ab82311c6425655b0cdab0a98c5d973b065c66a3f020740c2324c", size = 346110, upload-time = "2025-11-09T20:49:21.817Z" },
 ]
+
+[[package]]
+name = "lazy-hsa"
+version = "1.0.0"
+source = { editable = "." }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "click" },
+    { name = "email-validator" },
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "google-auth-httplib2" },
+    { name = "google-auth-oauthlib" },
+    { name = "gspread" },
+    { name = "imapclient" },
+    { name = "lxml" },
+    { name = "openai" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "pdf2image" },
+    { name = "pdfplumber" },
+    { name = "pillow" },
+    { name = "pillow-heif" },
+    { name = "playwright" },
+    { name = "pyasn1" },
+    { name = "pypdf" },
+    { name = "python-dateutil" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "urllib3" },
+    { name = "watchdog" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12.0" },
+    { name = "click", specifier = ">=8.1.0" },
+    { name = "email-validator", specifier = ">=2.2.0" },
+    { name = "google-api-python-client", specifier = ">=2.150.0" },
+    { name = "google-auth", specifier = ">=2.36.0" },
+    { name = "google-auth-httplib2", specifier = ">=0.2.0" },
+    { name = "google-auth-oauthlib", specifier = ">=1.2.0" },
+    { name = "gspread", specifier = ">=6.1.0" },
+    { name = "imapclient", specifier = ">=3.0.0" },
+    { name = "lxml", specifier = ">=5.3.0" },
+    { name = "openai", specifier = ">=1.50.0" },
+    { name = "openpyxl", specifier = ">=3.1.0" },
+    { name = "pandas", specifier = ">=2.2.0" },
+    { name = "pdf2image", specifier = ">=1.17.0" },
+    { name = "pdfplumber", specifier = ">=0.11.9" },
+    { name = "pillow", specifier = ">=11.0.0" },
+    { name = "pillow-heif", specifier = ">=1.1.1" },
+    { name = "playwright", specifier = ">=1.49.0" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "pyasn1", specifier = ">=0.6.2" },
+    { name = "pypdf", specifier = ">=6.6.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
+    { name = "python-dateutil", specifier = ">=2.9.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.9.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
+    { name = "urllib3", specifier = ">=2.6.3" },
+    { name = "watchdog", specifier = ">=6.0.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "lxml"

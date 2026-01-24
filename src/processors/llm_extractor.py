@@ -228,10 +228,12 @@ This is an Aetna EOB with MULTIPLE claims. Extract each claim line as a separate
 REQUIRED JSON STRUCTURE:
 {"document_type":"eob","payer_name":"Aetna","category":"medical","confidence_score":0.95,"notes":"","claims":[{"service_date":"YYYY-MM-DD","patient_name":"NAME","original_provider":"PROVIDER","service_type":"SERVICE","billed_amount":0.00,"insurance_paid":0.00,"patient_responsibility":0.00,"claim_number":""}]}
 
-PATIENT NAME MAPPING (use these exact names):
-- "Ming Hsun" or "self" -> "Ming"
-- "Thi Bich Thuy" or "spouse" -> "Vanessa"
-- "Maxwell" or "son" -> "Maxwell"
+PATIENT NAME MAPPING:
+- Map patient names to one of the configured family members
+- Use exact name match when possible
+- "self" or "subscriber" -> first family member (primary account holder)
+- "spouse" or "wife" or "husband" -> second family member if exists
+- "son" or "daughter" or "child" or "dependent" -> remaining family members
 
 FIELD MAPPING:
 - service_date: Look in claim details section for "Date of service" (format as YYYY-MM-DD)
@@ -345,7 +347,7 @@ def get_extraction_prompt(
     Returns:
         Complete extraction prompt
     """
-    family_members = family_members or ["Ming", "Vanessa", "Maxwell"]
+    family_members = family_members or ["Alice", "Bob", "Charlie"]
 
     skill_text = ""
     if provider_skill and provider_skill in PROVIDER_SKILLS:
@@ -374,7 +376,7 @@ class VisionExtractor:
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
-        self.family_members = family_members or ["Ming", "Vanessa", "Maxwell"]
+        self.family_members = family_members or ["Alice", "Bob", "Charlie"]
         self._client = None
         self._current_provider_skill = None  # Set per-file extraction
 
@@ -742,24 +744,35 @@ Output JSON only, starting with {{ and ending with }}:"""
         )
 
     def _map_patient_name(self, raw_name: str) -> str:
-        """Map raw patient names from EOB to family member names."""
+        """Map raw patient names from EOB to family member names.
+
+        Uses positional mapping for generic terms:
+        - Index 0: primary account holder ("self", "subscriber")
+        - Index 1: spouse ("spouse", "wife", "husband")
+        - Index 2+: dependents ("son", "daughter", "child", "dependent")
+        """
         raw_lower = raw_name.lower()
 
-        # Mapping of keywords to family member names
-        keyword_mappings = [
-            (["ming", "self"], "Ming"),
-            (["maxwell", "son"], "Maxwell"),
-            (["vanessa", "spouse", "thi"], "Vanessa"),
-        ]
-
-        for keywords, mapped_name in keyword_mappings:
-            if any(kw in raw_lower for kw in keywords):
-                return mapped_name
-
-        # Check if any family member name is contained
+        # First, check for exact family member name match
         for name in self.family_members:
             if name.lower() in raw_lower:
                 return name
+
+        # Map generic terms to family members by position
+        if len(self.family_members) >= 1 and any(
+            kw in raw_lower for kw in ["self", "subscriber", "primary"]
+        ):
+            return self.family_members[0]
+
+        if len(self.family_members) >= 2 and any(
+            kw in raw_lower for kw in ["spouse", "wife", "husband"]
+        ):
+            return self.family_members[1]
+
+        if len(self.family_members) >= 3 and any(
+            kw in raw_lower for kw in ["son", "daughter", "child", "dependent"]
+        ):
+            return self.family_members[2]
 
         # Default to first family member
         return self.family_members[0] if self.family_members else "Unknown"
