@@ -50,12 +50,16 @@ ollama serve
 ```
 
 **Recommended models:**
-| Model | Size | Best For |
-|-------|------|----------|
+| Model | Size | Notes |
+|-------|------|-------|
 | `mistral-small3` | 14B | Good balance of speed and accuracy |
 | `gpt-oss:20b` | 20B | Better JSON output for complex EOBs |
 | `gpt-oss:120b` | 120B | Highest accuracy (requires significant VRAM) |
-| `llava` | 7B | Lighter weight, faster on CPU |
+
+**Hardware options:**
+- **CPU/Consumer GPU**: Ollama with mistral-small3 works fine, just slower
+- **NVIDIA DGX Spark**: Ideal for running larger models (20B-120B) with fast inference
+- **Any vLLM-compatible server**: Point `api_base` to your inference endpoint
 
 ### 3. Set Up Google APIs
 

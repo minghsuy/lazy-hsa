@@ -11,9 +11,9 @@ llm:
   # Model name (as shown in `ollama list` or vLLM)
   # Options:
   #   - mistral-small3 (14B, vision-capable, good balance)
-  #   - llava (vision-capable, lighter weight)
   #   - gpt-oss:20b (20B, better JSON output for complex EOBs)
   #   - gpt-oss:120b (120B, highest accuracy, requires significant VRAM)
+  # For DGX Spark or other dedicated inference servers, use larger models
   model: "mistral-small3"
 
   # API endpoint (localhost for privacy - your data never leaves your machine)
