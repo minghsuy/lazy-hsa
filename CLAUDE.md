@@ -17,6 +17,12 @@ HSA effective date: 2026-01-01
 - Direct image-to-JSON extraction (no separate OCR step)
 - Prompt constrains patient_name to exactly one of: Ming, Vanessa, Maxwell
 
+### Text-Only EOB Extraction
+- Uses gpt-oss:20b for Aetna EOBs (faster, more reliable JSON output)
+- Extracts text via pdfplumber, no vision model needed
+- Supports multi-claim extraction (multiple patients/dates per EOB)
+- HSA date filtering: skips claims with service_date < 2026-01-01
+
 ### Google APIs
 - **Drive**: Stores receipts in `HSA_Receipts/{year}/{category}/{patient}/`
 - **Sheets**: Master index spreadsheet `HSA_Master_Index` tracks all records
@@ -66,9 +72,9 @@ hsa summary
 
 ## Key Files
 - `src/pipeline.py` - Main orchestration, CLI commands
-- `src/processors/llm_extractor.py` - Vision LLM extraction with family-constrained prompt
+- `src/processors/llm_extractor.py` - Vision LLM extraction, multi-claim EOB extraction, provider skills
 - `src/storage/gdrive_client.py` - Google Drive operations
-- `src/storage/sheet_client.py` - Google Sheets tracking with duplicate detection
+- `src/storage/sheet_client.py` - Google Sheets tracking, duplicate detection, EOB-statement linking
 - `src/watchers/inbox_watcher.py` - Drive _Inbox folder watcher
 - `src/extractors/gmail_extractor.py` - Gmail medical email extraction
 - `config/config.yaml` - All configuration (LLM endpoint, family members, etc.)
@@ -84,12 +90,16 @@ hsa summary
 - [x] Duplicate detection (same provider + date + amount)
 - [x] Dry-run mode for inbox and process commands
 - [x] Provider-specific extraction skills (see below)
+- [x] **Multi-claim EOB extraction**: Extract multiple claims from single Aetna EOB (v0.4.0)
+- [x] **HSA date filtering**: Skip claims with service_date < 2026-01-01 (v0.4.0)
+- [x] **EOB folder routing**: EOBs go to `EOBs/{category}/` instead of patient folders (v0.4.0)
+- [x] **Statement linking**: EOB claims auto-link to matching provider statements (v0.4.0)
+- [x] **Authoritative amounts**: Summary uses EOB amount when linked (v0.4.0)
+- [x] **Content-based provider detection**: Uses pdfplumber to detect provider from PDF content (v0.4.0)
 
-## What's Left (Phase 4: Validation & Robustness)
+## What's Left (Phase 5: Polish & Automation)
 
 ### High Priority
-- [ ] **EOB folder support**: Route EOBs to `EOBs/{category}/` instead of regular category folders
-- [ ] **Improved duplicate handling**: When EOB + bill detected, link them and use EOB's patient_responsibility as authoritative amount
 - [ ] **Error recovery**: Move failed files to `_Rejected/` with error notes
 - [ ] **Multi-page PDF handling**: Currently only processes first page, may miss data on subsequent pages
 
@@ -97,7 +107,6 @@ hsa summary
 - [ ] **Reimbursement tracking CLI**: `hsa reimburse --id 5 --amount 100.00 --date 2026-12-01`
 - [ ] **Annual summary export**: Generate PDF/Excel report for tax records
 - [ ] **Provider name normalization**: "Sutter Health" vs "SUTTER HEALTH SACRAMENTO" should match
-- [ ] **Service date validation**: Warn if service_date is in the future or before HSA start
 
 ### Low Priority / Future
 - [ ] **iOS Shortcuts integration**: Via Tailscale to home server
@@ -117,7 +126,7 @@ Provider-specific extraction prompts activate automatically based on filename pa
 | **Amazon** | "amazon" | Extracts Grand Total directly (includes tax) |
 | **Express Scripts** | "express scripts", "esrx" | Mail-order pharmacy, medication name extraction |
 | **Sutter** | "sutter", "pamf" | Hospital/clinic bills, Patient Responsibility field |
-| **Aetna** | "aetna" | Medical EOB, Member Responsibility, Plan Paid fields |
+| **Aetna** | "aetna" (filename or content) | Medical EOB, **multi-claim extraction**, text-only via gpt-oss:20b |
 | **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" | Vision EOB format |
 | **Stanford** | "stanford", "stanford health" | Hospital statements, Patient Responsibility, Service Date |

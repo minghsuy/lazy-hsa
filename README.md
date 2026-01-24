@@ -20,6 +20,23 @@ The HSA reimbursement strategy:
 
 **Important**: Only expenses from **January 1, 2026 onwards** are eligible (HSA start date).
 
+## Features
+
+### Multi-Claim EOB Processing
+The system can extract multiple claims from a single Explanation of Benefits (EOB) document:
+- **Multiple patients** on one EOB (e.g., family members)
+- **Multiple service dates** automatically split into separate records
+- **HSA date filtering** - claims before 2026-01-01 are automatically skipped
+- **Statement linking** - EOB claims auto-link to existing provider statements
+- **Authoritative amounts** - when linked, EOB amount is used for reimbursement calculations
+
+### Duplicate Detection & Linking
+When both a provider statement and EOB exist for the same service:
+- Both records are preserved (for audit trail)
+- Bidirectional links connect related records
+- EOB marked as authoritative (insurance-verified amount)
+- Summary calculations avoid double-counting
+
 ## Quick Start
 
 ### 1. Install Dependencies
@@ -161,7 +178,8 @@ The system includes specialized extraction rules for common providers:
 | **Amazon** | "amazon" in filename | Ship-to address for patient, Grand Total extraction |
 | **Express Scripts** | "express scripts" or "esrx" | Mail-order pharmacy prescriptions |
 | **Sutter/PAMF** | "sutter" or "pamf" | Hospital/clinic bills, Patient Responsibility field |
-| **Aetna** | "aetna" in filename | Medical EOB, Member Responsibility field |
+| **Aetna** | "aetna" in filename/content | Medical EOB, **multi-claim extraction**, Member Responsibility field |
+| **Stanford** | "stanford" in filename/content | Hospital statements, Patient Responsibility field |
 | **Delta Dental** | "delta dental" in filename | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" in filename | Vision EOB format |
 
@@ -212,16 +230,32 @@ Examples:
 For reimbursed files, append `.reimbursed`:
 - `2026-01-15_Stanford_Cardiology_$150.00.reimbursed.pdf`
 
+## Spreadsheet Columns
+
+The master tracking spreadsheet includes:
+
+| Column | Description |
+|--------|-------------|
+| ID | Auto-incrementing record ID |
+| Date Added | When the record was created |
+| Service Date | Date of medical service |
+| Provider | Provider name (for EOBs: the insurance company) |
+| Original Provider | For EOBs: who rendered the service |
+| Patient | Ming, Vanessa, or Maxwell |
+| Patient Responsibility | Amount owed (use this for reimbursement) |
+| Linked Record ID | Links EOB ↔ Statement bidirectionally |
+| Is Authoritative | "Yes" for EOBs when linked (use this amount) |
+
 ## Components
 
 | Component | Purpose |
 |-----------|---------|
 | `src/pipeline.py` | Main orchestration and CLI |
-| `src/processors/llm_extractor.py` | Vision LLM extraction with provider skills |
+| `src/processors/llm_extractor.py` | Vision LLM extraction with provider skills, EOB multi-claim extraction |
 | `src/extractors/gmail_extractor.py` | Gmail API receipt extraction |
 | `src/watchers/inbox_watcher.py` | Google Drive _Inbox folder watcher |
-| `src/storage/gdrive_client.py` | Google Drive file management |
-| `src/storage/sheet_client.py` | Google Sheets tracking with duplicate detection |
+| `src/storage/gdrive_client.py` | Google Drive file management, EOB folder routing |
+| `src/storage/sheet_client.py` | Google Sheets tracking, duplicate detection, record linking |
 
 ## Development
 
