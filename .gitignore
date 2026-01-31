@@ -43,3 +43,6 @@ test_receipts/
 
 # Temp/working directories
 tmp/
+
+# GitHub Wiki (separate git repository)
+wiki-repo/
