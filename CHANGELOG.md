@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-01-31
+
+### Added
+- **Express Scripts Multi-Claim Extraction**: Process claims summaries with multiple prescriptions per family member
+  - PDF extraction via vision model for scanned/image-based documents
+  - Direct xlsx parsing via openpyxl (no LLM needed, 100% confidence)
+  - Medication names tracked in service_type for long-term health monitoring
+- **Sutter Health Multi-Claim Extraction**: Extract individual service lines from statements
+  - Guarantor vs patient distinction (uses patient name, not bill payer)
+  - Each service line becomes a separate claim record
+- **Duplicate Claim Detection**: Automatically detects when the same claim exists from different source files
+  - Links supplementary evidence to the authoritative record
+  - Prevents double-counting in reimbursement totals
+- **Pre-flight Token Validation**: Validates Google Drive and Sheets API tokens before processing
+  - Fails fast on expired tokens instead of wasting time on LLM extraction
+  - Clear error messages with instructions to re-authenticate
+- **Shared File Handling**: Gracefully handles files shared from other Google accounts in _Inbox
+  - Falls back to removeParents when trash fails (403 permission)
+  - Files still processed and recorded even if inbox cleanup fails
+- **Separate Vision Model Config**: Configure a dedicated vision-capable model for image extraction
+  - `vision_model` setting in config.yaml (falls back to primary model)
+  - Prevents sending images to text-only models
+
+### Changed
+- Multi-claim routing expanded: Aetna, Express Scripts, Sutter all use multi-claim pipeline
+- xlsx files recognized as valid receipt types in inbox watcher
+- CLI display handles both dry-run and real-run result formats correctly
+- Extracted `JSON_EXTRACTOR_SYSTEM_PROMPT` constant (was duplicated 3 times)
+- Removed dead `_get_multi_claim_prompt` method
+- Reduced xlsx per-row log noise (info → debug)
+
+### Fixed
+- Express Scripts pattern matching: "express_script" (singular) now detected
+- pypdf bumped to 6.6.2 (security fix: cyclic reference detection in outlines)
+
 ## [1.0.0] - 2026-01-24
 
 ### Added
