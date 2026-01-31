@@ -22,6 +22,12 @@ MIN_PAGE_TEXT_LENGTH = 50  # Skip pages with less usable text
 MAX_FALLBACK_PAGES = 4  # Max pages to check in image-only fallback
 MAX_PDF_PAGES = 5  # Max pages to process from PDFs
 
+JSON_EXTRACTOR_SYSTEM_PROMPT = (
+    "You are a JSON extractor. You ONLY output valid JSON objects. "
+    "Never output markdown, explanations, or any text outside the JSON. "
+    "Your response must start with { and end with }."
+)
+
 
 class Category(Enum):
     MEDICAL = "medical"
@@ -208,17 +214,35 @@ AMAZON ORDER RULES:
 - document_type: "receipt"
 """,
     "sutter": """
-SUTTER HEALTH STATEMENT RULES:
-- This is a hospital/medical statement from Sutter Health or PAMF
-- CRITICAL: Put the dollar amount in patient_responsibility field, NOT in notes!
-- Look for "Patient Responsibility" or "Amount Due" or "Balance Due" → put in patient_responsibility
-- Look for "Insurance Payment" or "Plan Paid" or "Adjustments" → put in insurance_paid
-- Look for "Total Charges" or "Billed Amount" → put in billed_amount
-- service_date = "Date of Service" or "Service Date" (format YYYY-MM-DD)
-- provider_name = the doctor/provider name shown (e.g., "Sivanesan, Kaartiga, MD")
-- category = "medical"
-- document_type = "statement"
-- eligible_subtotal = same as patient_responsibility (for non-retail medical)
+OUTPUT FORMAT: Return ONLY a JSON object. No markdown, no explanation, no text before or after.
+
+This is a Sutter Health / PAMF statement that may contain MULTIPLE service lines/charges.
+
+CRITICAL DISTINCTION - GUARANTOR vs PATIENT:
+- The "Guarantor" (or "Responsible Party") is the person who PAYS the bill - NOT necessarily the patient
+- The "Patient" is the person who RECEIVED the medical service
+- ALWAYS use the PATIENT name (not guarantor) for patient_name
+- If "Patient:" and "Guarantor:" are different people, use the Patient name
+- If the document says "Patient: Charlie" and "Guarantor: Alice", the patient_name is "Charlie"
+
+REQUIRED JSON STRUCTURE:
+{"document_type":"statement","payer_name":"Sutter Health","category":"medical","confidence_score":0.95,"notes":"","claims":[{"service_date":"YYYY-MM-DD","patient_name":"PATIENT_NAME","original_provider":"DOCTOR_NAME","service_type":"SERVICE_DESCRIPTION","billed_amount":0.00,"insurance_paid":0.00,"patient_responsibility":0.00,"claim_number":""}]}
+
+FIELD MAPPING:
+- service_date: "Date of Service" for each line item (format as YYYY-MM-DD)
+- patient_name: The PATIENT who received care (NOT the guarantor/responsible party)
+- original_provider: Doctor/provider name (e.g., "Gilliam, Amy E, MD")
+- service_type: Service description (e.g., "Office Visit", "Laboratory", "X-Ray")
+- patient_responsibility: Amount owed for each service line
+- insurance_paid: Insurance payment for each service line
+- billed_amount: Original charge for each service line
+
+RULES:
+- Each service line/charge = one claim entry (do NOT combine them)
+- If multiple dates of service appear, each is a separate claim
+- If multiple service types appear on the same date, each is still a separate claim
+- Look for itemized charges in the statement detail section
+- Return ONLY the JSON object, nothing else
 """,
     "aetna": """
 OUTPUT FORMAT: Return ONLY a JSON object. No markdown, no explanation, no text before or after.
@@ -248,15 +272,31 @@ RULES:
 - Return ONLY the JSON object, nothing else
 """,
     "express_scripts": """
-EXPRESS SCRIPTS-SPECIFIC RULES:
-- This is a pharmacy receipt/invoice from Express Scripts (PBM)
-- Medications delivered by mail are HSA-eligible prescriptions
-- Look for "Your Cost" or "You Pay" for patient_responsibility
-- service_type should be the medication name(s)
-- provider_name = "Express Scripts"
-- category = "pharmacy"
-- document_type = "prescription"
-- hsa_eligible = true (prescriptions are always eligible)
+OUTPUT FORMAT: Return ONLY a JSON object. No markdown, no explanation, no text before or after.
+
+This is an Express Scripts (PBM) Claims Summary with MULTIPLE prescription claims for one or more family members.
+
+REQUIRED JSON STRUCTURE:
+{"document_type":"eob","payer_name":"Express Scripts","category":"pharmacy","confidence_score":0.95,"notes":"","claims":[{"service_date":"YYYY-MM-DD","patient_name":"NAME","original_provider":"Express Scripts","service_type":"MEDICATION_NAME","billed_amount":0.00,"insurance_paid":0.00,"patient_responsibility":0.00,"claim_number":""}]}
+
+PATIENT NAME MAPPING:
+- Map patient names to one of the configured family members
+- Look for "Member Name", "Patient", or name at the top of each claim section
+
+FIELD MAPPING:
+- service_date: Date the prescription was filled or shipped (format as YYYY-MM-DD)
+- original_provider: Always "Express Scripts" (the PBM)
+- service_type: Medication name (e.g., "Omeprazole 20mg", "Amoxicillin 500mg")
+- patient_responsibility: "Your Cost", "You Pay", "Member Cost", "Copay" amount
+- insurance_paid: "Plan Paid" or total minus your cost
+- billed_amount: "Total Cost" or "Drug Cost"
+- claim_number: Rx number if shown
+
+RULES:
+- Each prescription line = one claim entry
+- If multiple family members appear, create separate claims for each
+- All prescriptions are HSA-eligible (hsa_eligible = true)
+- Return ONLY the JSON object, nothing else
 """,
     "delta_dental": """
 DELTA DENTAL-SPECIFIC RULES:
@@ -315,6 +355,7 @@ def detect_provider_skill(filename: str, hints: list[str] | None = None) -> str 
         "express_scripts": [
             "express scripts",
             "express_scripts",
+            "express_script",
             "express-scripts",
             "expressscripts",
             "esrx",
@@ -368,12 +409,14 @@ class VisionExtractor:
         self,
         api_base: str = "http://localhost:11434/v1",
         model: str = "mistral-small3",
+        vision_model: str | None = None,
         max_tokens: int = 2048,
         temperature: float = 0.1,
         family_members: list[str] | None = None,
     ):
         self.api_base = api_base.rstrip("/")
         self.model = model
+        self.vision_model = vision_model or model  # Fallback to primary model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.family_members = family_members or ["Alice", "Bob", "Charlie"]
@@ -527,8 +570,10 @@ Analyze the text above to extract the JSON data. The text contains content from 
             )
 
         try:
+            # Use vision model when image is included, text model otherwise
+            model = self.vision_model if (image_path and image_path.exists()) else self.model
             response = client.chat.completions.create(
-                model=self.model,
+                model=model,
                 messages=[{"role": "user", "content": content}],
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
@@ -549,18 +594,105 @@ Analyze the text above to extract the JSON data. The text contains content from 
             provider_skill=self._current_provider_skill,
         )
 
-    def _get_multi_claim_prompt(self) -> str:
-        """Get prompt for multi-claim EOB extraction."""
-        skill_text = PROVIDER_SKILLS.get(self._current_provider_skill, "")
-        return f"""You are a JSON data extractor. Your task is to extract structured data from this EOB document.
+    def _extract_xlsx_claims(self, file_path: Path) -> MultiClaimExtraction:
+        """Extract claims directly from an Express Scripts xlsx file.
 
-IMPORTANT: Output ONLY valid JSON. No markdown, no explanations, no text outside the JSON.
+        No LLM needed - pure structured data parsing via openpyxl.
 
-Family members for patient_name field: {", ".join(self.family_members)}
+        Expected columns:
+        A: Fullname With YOB  B: Prescription Number  C: Drug Name
+        D: Drug Strength  E: Days Supply  F: Quantity  G: Pharmacy Name
+        H: Date Of Service  I: Total cost  J: Total you paid
+        """
+        try:
+            import openpyxl
+        except ImportError as err:
+            raise ImportError("openpyxl not installed. Run: uv add openpyxl") from err
 
-{skill_text}
+        wb = openpyxl.load_workbook(file_path, read_only=True)
+        ws = wb.active
+        claims = []
 
-Remember: Output ONLY the JSON object starting with {{ and ending with }}"""
+        # Read header row to find columns dynamically
+        headers = {}
+        for cell in next(ws.iter_rows(min_row=1, max_row=1)):
+            if cell.value:
+                headers[cell.value.strip().lower()] = cell.column - 1  # 0-indexed
+
+        # Map expected column names
+        col_map = {
+            "name": headers.get("fullname with yob", 0),
+            "rx_number": headers.get("prescription number", 1),
+            "drug_name": headers.get("drug name", 2),
+            "drug_strength": headers.get("drug strength", 3),
+            "days_supply": headers.get("days supply", 4),
+            "quantity": headers.get("quantity", 5),
+            "pharmacy": headers.get("pharmacy name", 6),
+            "date": headers.get("date of service", 7),
+            "total_cost": headers.get("total cost", 8),
+            "you_paid": headers.get("total you paid", 9),
+        }
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            # Skip empty rows and total rows
+            if not row[col_map["name"]]:
+                continue
+
+            raw_name = str(row[col_map["name"]])
+            # Strip year of birth suffix like "(2017)"
+            patient_raw = re.sub(r"\s*\(\d{4}\)\s*$", "", raw_name).strip()
+            patient = self._map_patient_name(patient_raw)
+
+            drug_name = str(row[col_map["drug_name"]] or "Unknown")
+            drug_strength = str(row[col_map["drug_strength"]] or "")
+            service_type = f"{drug_name} {drug_strength}".strip()
+
+            # Parse date (MM/DD/YYYY -> YYYY-MM-DD)
+            raw_date = str(row[col_map["date"]] or "")
+            try:
+                parsed_date = datetime.strptime(raw_date, "%m/%d/%Y")
+                service_date = parsed_date.strftime("%Y-%m-%d")
+            except ValueError:
+                service_date = raw_date
+
+            total_cost = self._parse_amount(row[col_map["total_cost"]])
+            you_paid = self._parse_amount(row[col_map["you_paid"]])
+            days_supply = row[col_map["days_supply"]] or ""
+            quantity = row[col_map["quantity"]] or ""
+            rx_number = str(row[col_map["rx_number"]] or "")
+
+            claims.append(
+                ExtractedClaim(
+                    service_date=service_date,
+                    patient_name=patient,
+                    original_provider=str(row[col_map["pharmacy"]] or "Express Scripts"),
+                    service_type=service_type,
+                    billed_amount=total_cost,
+                    insurance_paid=max(0, total_cost - you_paid),
+                    patient_responsibility=you_paid,
+                    claim_number=rx_number,
+                )
+            )
+
+            logger.info(
+                f"Parsed xlsx claim: {patient} | {service_date} | "
+                f"{service_type} | ${you_paid:.2f} (Rx#{rx_number}, "
+                f"{days_supply}d supply, qty {quantity})"
+            )
+
+        wb.close()
+
+        logger.info(f"Extracted {len(claims)} claims from xlsx (no LLM needed)")
+
+        return MultiClaimExtraction(
+            document_type="eob",
+            payer_name="Express Scripts",
+            category="pharmacy",
+            confidence_score=1.0,  # Perfect - structured data, no LLM guessing
+            notes="Parsed directly from Express Scripts xlsx export",
+            raw_extraction={"source": "xlsx", "file": str(file_path)},
+            claims=claims,
+        )
 
     def extract_eob(
         self, file_path: str | Path, provider_hint: str | None = None
@@ -586,55 +718,92 @@ Remember: Output ONLY the JSON object starting with {{ and ending with }}"""
             logger.info(f"Detected provider skill for EOB: {self._current_provider_skill}")
 
         try:
-            # Extract text from PDF - no vision needed for structured EOBs
+            # xlsx files: parse directly, no LLM needed
             suffix = file_path.suffix.lower()
+            if suffix == ".xlsx":
+                logger.info("Detected xlsx file - using direct spreadsheet parsing")
+                return self._extract_xlsx_claims(file_path)
+
+            # Extract text from PDF - prefer text-based extraction
+            text_content = ""
             if suffix == ".pdf":
                 text_content = self._extract_text_with_pdfplumber(file_path)
-            else:
-                # For images, we'd need OCR - not typical for EOBs
-                logger.warning(f"EOB extraction expects PDF, got {suffix}")
-                text_content = ""
 
-            if not text_content:
-                logger.error("No text extracted from EOB")
-                return self._build_multi_claim_extraction({})
-
-            # Build request for multi-claim extraction (text-only, no vision needed)
             client = self._init_client()
-
-            # Build messages with system prompt for better JSON compliance
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a JSON extractor. You ONLY output valid JSON objects. "
-                        "Never output markdown, explanations, or any text outside the JSON. "
-                        "Your response must start with { and end with }."
-                    ),
-                },
-            ]
-
-            # User message with EOB content
             skill_text = PROVIDER_SKILLS.get(self._current_provider_skill, "")
-            user_prompt = f"""Extract claims from this EOB document.
+
+            if text_content:
+                # Text-based extraction (works for most EOBs/statements)
+                user_prompt = f"""Extract claims from this document.
 
 {skill_text}
 
 Family members: {", ".join(self.family_members)}
 
-EOB TEXT:
+DOCUMENT TEXT:
 {text_content[:16000]}
 
 Output JSON only, starting with {{ and ending with }}:"""
 
-            messages.append({"role": "user", "content": user_prompt})
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": JSON_EXTRACTOR_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=4096,
+                    temperature=self.temperature,
+                )
+            else:
+                # Image-based fallback (for scanned/image PDFs like Express Scripts)
+                logger.info("No text extracted, using vision-based multi-claim extraction")
 
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=4096,  # Increased for multi-claim EOBs
-                temperature=self.temperature,
-            )
+                image_paths = []
+                if suffix == ".pdf":
+                    image_paths = self._convert_pdf_to_images(file_path, max_pages=MAX_PDF_PAGES)
+                elif suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+                    image_paths = [file_path]
+
+                if not image_paths:
+                    logger.error("No text or images available for extraction")
+                    return self._build_multi_claim_extraction({})
+
+                prompt_text = f"""Extract claims from this document image.
+
+{skill_text}
+
+Family members: {", ".join(self.family_members)}
+
+Output JSON only, starting with {{ and ending with }}:"""
+
+                # Build vision content with all page images
+                content = [{"type": "text", "text": prompt_text}]
+                for img_path in image_paths:
+                    image_data, mime_type = self._encode_image(img_path)
+                    content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{image_data}"},
+                        }
+                    )
+
+                try:
+                    logger.info(f"Using vision model: {self.vision_model}")
+                    response = client.chat.completions.create(
+                        model=self.vision_model,
+                        messages=[
+                            {"role": "system", "content": JSON_EXTRACTOR_SYSTEM_PROMPT},
+                            {"role": "user", "content": content},
+                        ],
+                        max_tokens=4096,
+                        temperature=self.temperature,
+                    )
+                finally:
+                    # Cleanup temp images (only if we created them from PDF)
+                    if suffix == ".pdf":
+                        for img_path in image_paths:
+                            with contextlib.suppress(OSError):
+                                img_path.unlink()
 
             raw_response = response.choices[0].message.content
             parsed = self._parse_response(raw_response)
@@ -795,14 +964,14 @@ Output JSON only, starting with {{ and ending with }}:"""
             return 0.0
 
     def extract_from_image(self, image_path: Path) -> ExtractedReceipt:
-        """Extract receipt data from a single image."""
+        """Extract receipt data from a single image using vision model."""
         client = self._init_client()
         image_data, mime_type = self._encode_image(image_path)
         prompt = self._get_prompt()
 
         try:
             response = client.chat.completions.create(
-                model=self.model,
+                model=self.vision_model,
                 messages=[
                     {
                         "role": "user",
@@ -1080,12 +1249,13 @@ def get_extractor(
     use_mock: bool = False,
     api_base: str = "http://localhost:11434/v1",
     model: str = "mistral-small3",
+    vision_model: str | None = None,
     **kwargs,
 ) -> VisionExtractor:
     """Factory function to get appropriate extractor."""
     if use_mock:
         return MockVisionExtractor()
-    return VisionExtractor(api_base=api_base, model=model, **kwargs)
+    return VisionExtractor(api_base=api_base, model=model, vision_model=vision_model, **kwargs)
 
 
 if __name__ == "__main__":

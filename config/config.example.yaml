@@ -21,6 +21,11 @@ llm:
   # vLLM default: http://localhost:8000/v1
   api_base: "http://localhost:11434/v1"
 
+  # Vision model for image-based extraction (scanned PDFs, photos)
+  # Used when pdfplumber can't extract text and vision fallback is needed
+  # Set to a vision-capable model if your primary model lacks vision
+  # vision_model: "mistral-small3"
+
   # Vision-enabled model processes images directly (no separate OCR needed)
   # For multi-page PDFs, pdfplumber extracts text from all pages
   vision_enabled: true

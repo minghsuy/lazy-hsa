@@ -116,9 +116,24 @@ class DriveInboxWatcher:
         ).execute()
 
     def delete_file(self, file_id: str):
-        """Delete a file from Drive (move to trash)."""
+        """Remove a file from inbox.
+
+        First tries to trash the file. If that fails (e.g. file is owned by
+        another account and shared into _Inbox), falls back to removing the
+        file from the inbox folder without deleting it.
+        """
         service = self.gdrive._get_service()
-        service.files().update(fileId=file_id, body={"trashed": True}).execute()
+        try:
+            service.files().update(fileId=file_id, body={"trashed": True}).execute()
+        except Exception:
+            # Can't trash files owned by others - remove from inbox folder instead
+            inbox_id = self._get_inbox_folder_id()
+            service.files().update(
+                fileId=file_id,
+                removeParents=inbox_id,
+                fields="id, parents",
+            ).execute()
+            logger.info("Removed shared file from inbox (not trashed, still in owner's Drive)")
 
     def poll(self, download_dir: Path = None) -> list[dict]:
         """
@@ -177,8 +192,15 @@ class DriveInboxWatcher:
 
                     # Delete from inbox (unless dry run)
                     if not self.dry_run:
-                        self.delete_file(file_id)
-                        logger.info(f"Processed and removed from inbox: {filename}")
+                        try:
+                            self.delete_file(file_id)
+                            logger.info(f"Processed and removed from inbox: {filename}")
+                        except Exception as del_err:
+                            logger.warning(
+                                f"Processed OK but couldn't remove from inbox: "
+                                f"{filename} ({del_err}). "
+                                f"File may need manual removal (e.g. shared by another account)."
+                            )
                     else:
                         logger.info(f"Dry run - file kept in inbox: {filename}")
 
@@ -207,6 +229,7 @@ class DriveInboxWatcher:
             ".gif",
             ".heic",
             ".heif",
+            ".xlsx",
         }
         return Path(filename).suffix.lower() in extensions
 

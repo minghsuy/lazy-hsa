@@ -47,10 +47,14 @@ class TestDriveInboxWatcherIsReceiptFile:
         assert watcher._is_receipt_file("image.heif") is True
         assert watcher._is_receipt_file("scan.HEIF") is True
 
+    def test_xlsx_is_receipt(self, watcher):
+        """xlsx files are receipts (Express Scripts claims summaries)."""
+        assert watcher._is_receipt_file("Claims Summary.xlsx") is True
+        assert watcher._is_receipt_file("express_scripts.XLSX") is True
+
     def test_non_receipt_files_rejected(self, watcher):
         """Non-receipt file types are rejected."""
         assert watcher._is_receipt_file("document.docx") is False
-        assert watcher._is_receipt_file("spreadsheet.xlsx") is False
         assert watcher._is_receipt_file("notes.txt") is False
         assert watcher._is_receipt_file("archive.zip") is False
         assert watcher._is_receipt_file("video.mp4") is False
