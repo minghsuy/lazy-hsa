@@ -330,7 +330,7 @@ class HSAReceiptPipeline:
                 confidence=extraction.confidence_score,
                 notes=notes,
                 original_provider=claim.original_provider,
-                linked_record_id=linked_to,
+                linked_record_id=str(linked_to) if linked_to is not None else None,
                 is_authoritative=is_authoritative,
             )
 
