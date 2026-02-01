@@ -45,7 +45,7 @@ class ReceiptRecord:
     # New fields for EOB linking (Phase 4)
     original_provider: str = ""  # For EOBs: who actually provided the service
     linked_record_id: str | None = None  # Pipe-separated IDs for linked records (e.g., "17|18")
-    is_authoritative: bool = False  # EOB = True when linked, use this amount for reimbursement
+    is_authoritative: bool = False  # "Yes" for authoritative EOBs, "No" for linked subordinate records, "" for standalone
 
 
 class GSheetsClient:
@@ -186,7 +186,7 @@ class GSheetsClient:
             # New fields for EOB linking
             record.original_provider or "",
             record.linked_record_id if record.linked_record_id is not None else "",
-            "Yes" if record.is_authoritative else "No",
+            "Yes" if record.is_authoritative else ("No" if record.linked_record_id else ""),
         ]
 
         worksheet.append_row(row, value_input_option="USER_ENTERED")
@@ -425,12 +425,21 @@ class GSheetsClient:
 
         return matches
 
-    def get_unreimbursed_total(self) -> float:
-        """Calculate total unreimbursed amount, using authoritative records when linked.
+    @staticmethod
+    def _is_countable_record(record: dict) -> bool:
+        """Check if record should count in totals.
 
-        When an EOB and statement are linked:
-        - Only count the authoritative record (typically the EOB)
-        - Skip the non-authoritative linked record to avoid double-counting
+        "No" -> skip (subordinate/duplicate)
+        "Yes" or "" -> count
+        """
+        return record.get("Is Authoritative") != "No"
+
+    def get_unreimbursed_total(self) -> float:
+        """Calculate total unreimbursed amount, excluding non-authoritative records.
+
+        Records with Is Authoritative = "No" are always excluded, even if
+        they haven't been linked yet. This prevents double-counting when
+        both a statement and EOB exist for the same service.
         """
         records = self.get_all_records()
         return sum(
@@ -438,16 +447,15 @@ class GSheetsClient:
             for r in records
             if r.get("HSA Eligible") == "Yes"
             and r.get("Reimbursed") != "Yes"
-            # Skip non-authoritative records that are linked (avoid double-counting)
-            and not (r.get("Linked Record ID") and r.get("Is Authoritative") != "Yes")
+            and self._is_countable_record(r)
         )
 
     def get_summary_by_year(self) -> dict[int, dict[str, float]]:
-        """Get summary by year, using authoritative amounts for linked records.
+        """Get summary by year, excluding non-authoritative records.
 
-        When an EOB and statement are linked:
-        - Count only the authoritative record in totals
-        - Skip non-authoritative linked records to avoid double-counting
+        Records with Is Authoritative = "No" are always excluded, even if
+        they haven't been linked yet. This prevents double-counting when
+        both a statement and EOB exist for the same service.
         """
         records = self.get_all_records()
         summary = {}
@@ -457,8 +465,7 @@ class GSheetsClient:
             if not service_date:
                 continue
 
-            # Skip non-authoritative records that are linked (avoid double-counting)
-            if record.get("Linked Record ID") and record.get("Is Authoritative") != "Yes":
+            if not self._is_countable_record(record):
                 continue
 
             try:

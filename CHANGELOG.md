@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Summary Double-Counting**: Records with `Is Authoritative = "No"` now excluded from totals
+  even without a `Linked Record ID`. Previously, unlinked non-authoritative records were still
+  counted in `get_unreimbursed_total()` and `get_summary_by_year()`, inflating the "Your Cost" total.
 - **CVS Prescription Extraction**: Prescriptions now use copay (AMOUNT DUE) instead of retail price
   - Previously extracted $144.99 (retail) instead of $70.54 (copay) for Rx receipts
   - Prescriptions set `document_type: "prescription"` with `eligible_subtotal: 0` to skip retail tax calc
