@@ -117,6 +117,23 @@ IRS allows HSA reimbursement of sales tax on eligible items.
 2. Add pattern to `provider_patterns` in `detect_provider_skill()`
 3. Test with `lazy-hsa inbox --dry-run` before committing
 
+## Record Authority & Summary Filtering
+
+The `Is Authoritative` column in the master spreadsheet controls which records count in totals:
+
+| Value | Meaning | Counted in summary? |
+|-------|---------|---------------------|
+| `"Yes"` | EOB or authoritative record | Yes |
+| `"No"` | Linked subordinate (statement/duplicate) | **No** |
+| `""` (empty) | Standalone record, no link | Yes |
+
+**Key rule**: `_is_countable_record()` in `sheet_client.py` excludes any record with `Is Authoritative = "No"`, regardless of whether `Linked Record ID` is set. This prevents double-counting orphaned non-authoritative records.
+
+**Ingestion behavior** (`pipeline.py` + `sheet_client.py:add_record()`):
+- EOBs always get `is_authoritative=True` → writes `"Yes"`
+- Linked subordinate records get `is_authoritative=False` with a `linked_record_id` → writes `"No"`
+- Standalone receipts/statements get `is_authoritative=False` with no link → writes `""`
+
 ## Development Notes
 
 ### Running with Poppler (for PDF processing)

@@ -1,6 +1,6 @@
 [project]
 name = "lazy-hsa"
-version = "1.1.1"
+version = "1.1.2"
 description = "Privacy-first, local AI-powered HSA receipt organization system"
 readme = "README.md"
 requires-python = ">=3.12"

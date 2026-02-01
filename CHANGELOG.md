@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-02-01
+
 ### Fixed
 - **Summary Double-Counting**: Records with `Is Authoritative = "No"` now excluded from totals
   even without a `Linked Record ID`. Previously, unlinked non-authoritative records were still
   counted in `get_unreimbursed_total()` and `get_summary_by_year()`, inflating the "Your Cost" total.
+- **Standalone EOBs**: EOBs are now always marked authoritative (`"Yes"`) regardless of link status
+- **Legacy Data**: Standalone records no longer written as `"No"` — unlinked records get `""` (empty)
 - **CVS Prescription Extraction**: Prescriptions now use copay (AMOUNT DUE) instead of retail price
   - Previously extracted $144.99 (retail) instead of $70.54 (copay) for Rx receipts
   - Prescriptions set `document_type: "prescription"` with `eligible_subtotal: 0` to skip retail tax calc
@@ -21,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `billed_amount` and `patient_responsibility` fields to JSON extraction template
 - Year in CVS date format hint now injected dynamically (no hardcoded year)
 - Updated CLAUDE.md Provider Skills table: CVS, Express Scripts, Sutter descriptions
+- Documented tri-state `Is Authoritative` semantics in README, CLAUDE.md, and wiki
 
 ## [1.1.1] - 2026-01-31
 

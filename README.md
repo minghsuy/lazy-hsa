@@ -247,12 +247,16 @@ EOBs go to `EOBs/{category}/` to keep them separate from provider receipts.
 
 The master spreadsheet tracks both documents and links them:
 
-| Date | Provider | Patient | Billed | Insurance Paid | Your Cost | Linked EOB | Authoritative |
-|------|----------|---------|--------|----------------|-----------|------------|---------------|
+| Date | Provider | Patient | Billed | Insurance Paid | Your Cost | Linked Record | Is Authoritative |
+|------|----------|---------|--------|----------------|-----------|---------------|------------------|
 | 2024-01-15 | Stanford | Alice | $250 | $205 | $45 | Row 15 | No |
-| 2024-01-20 | Aetna EOB | Alice | $250 | $205 | $45 | - | Yes |
+| 2024-01-20 | Aetna EOB | Alice | $250 | $205 | $45 | Row 14 | Yes |
+| 2024-02-10 | CVS | Bob | $70 | $0 | $70 | - | *(empty)* |
 
-When calculating totals for reimbursement, only **authoritative** records are counted to avoid double-counting.
+The `Is Authoritative` column uses three values:
+- **Yes** — EOBs and authoritative records (always counted in totals)
+- **No** — Linked subordinate records like provider statements (always excluded from totals)
+- *(empty)* — Standalone records with no linked counterpart (always counted in totals)
 
 ## Supported Formats
 
