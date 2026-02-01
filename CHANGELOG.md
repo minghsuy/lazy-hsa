@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-01-31
+
+### Fixed
+- **Multi-Record Linking**: `linked_record_id` now supports multiple IDs (pipe-separated, e.g., `"17|18"`)
+  - One document (e.g., Express Scripts invoice) can link to multiple authoritative records
+  - `link_records()` appends IDs instead of overwriting existing links
+  - Pipe `|` separator avoids Google Sheets misinterpreting commas as thousands separators
+
+### Changed
+- Variance calculation in `link_records()` uses `_safe_float()` consistently with rest of codebase
+- Removed unused `contextlib` import
+
 ## [1.1.0] - 2026-01-31
 
 ### Added
