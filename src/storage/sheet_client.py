@@ -45,7 +45,7 @@ class ReceiptRecord:
     notes: str
     # New fields for EOB linking (Phase 4)
     original_provider: str = ""  # For EOBs: who actually provided the service
-    linked_record_id: str | None = None  # Comma-separated IDs for linked records
+    linked_record_id: str | None = None  # Pipe-separated IDs for linked records (e.g., "17|18")
     is_authoritative: bool = False  # EOB = True when linked, use this amount for reimbursement
 
 
@@ -324,7 +324,7 @@ class GSheetsClient:
         - EOB is marked as authoritative (use its amount for reimbursement)
         - Statement gets linked_record_id pointing to EOB
         - Notes updated with variance if amounts differ
-        - Supports multiple links (comma-separated IDs)
+        - Supports multiple links (pipe-separated IDs)
 
         Args:
             eob_id: ID of the EOB record
