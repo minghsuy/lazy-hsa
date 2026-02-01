@@ -124,7 +124,9 @@ Extract the following as a JSON object:
   "eligible_subtotal": 0.00,
   "receipt_tax": 0.00,
   "receipt_taxable_amount": 0.00,
+  "billed_amount": 0.00,
   "insurance_paid": 0.00,
+  "patient_responsibility": 0.00,
   "hsa_eligible": true,
   "category": "medical|dental|vision|pharmacy",
   "document_type": "receipt|eob|statement|claim|prescription",
@@ -186,11 +188,32 @@ Example: If you see 4 lines of "SALONPAS 140  15.99 A F Dept" → eligible_subto
 """,
     "cvs": """
 CVS-SPECIFIC RULES:
+
+FIRST: Determine if this is a PRESCRIPTION or OTC purchase.
+
+PRESCRIPTION (has Rx number, NDC, "AMOUNT DUE", "RETAIL PRICE"):
+- provider_name: "CVS"
+- document_type: "prescription"
+- eligible_subtotal: 0 (IMPORTANT: must be 0 for prescriptions)
+- patient_responsibility: the "AMOUNT DUE" on the receipt (copay after insurance)
+- billed_amount: the "RETAIL PRICE" shown on the receipt
+- insurance_paid: RETAIL PRICE minus AMOUNT DUE
+- service_type: "Rx: MEDICATION_NAME STRENGTH" (e.g., "Rx: Tranexamic Acid 650mg")
+- category: "pharmacy"
+- hsa_eligible: true (all prescriptions are HSA eligible)
+
+OTC PURCHASE (no Rx number, store receipt format):
 - Look for FSA/HSA ELIGIBLE label on items
-- Rx number indicates prescription (hsa_eligible=true)
-- Include copay as patient_responsibility
-- For OTC items, only include if marked FSA eligible
-- category = "pharmacy"
+- Only include items marked FSA eligible
+- document_type: "receipt"
+- category: "pharmacy"
+
+DATE FORMAT:
+- CVS receipts use M/DD/YY format with 2-digit year
+- "1/23/26" means January 23, {current_year} (NOT 2023)
+- The current year is {current_year}, so "{current_year_short}" = {current_year}, etc.
+- Use "DATE FILLED" as the service_date for prescriptions
+- Format as YYYY-MM-DD in your output
 """,
     "walgreens": """
 WALGREENS-SPECIFIC RULES:
@@ -394,6 +417,11 @@ def get_extraction_prompt(
     if provider_skill and provider_skill in PROVIDER_SKILLS:
         skill_text = PROVIDER_SKILLS[provider_skill]
         logger.info(f"Applying provider skill: {provider_skill}")
+
+    # Inject dynamic values into provider skill text
+    now = datetime.now()
+    skill_text = skill_text.replace("{current_year}", str(now.year))
+    skill_text = skill_text.replace("{current_year_short}", str(now.year % 100))
 
     return EXTRACTION_PROMPT_TEMPLATE.format(
         family_members=", ".join(family_members),
@@ -1163,8 +1191,8 @@ Output JSON only, starting with {{ and ending with }}:"""
             tax_rate = receipt_tax / receipt_taxable_amount
             tax_on_eligible = round(eligible_subtotal * tax_rate, 2)
 
-        # For retail: patient_responsibility = eligible items + tax
-        # For EOBs: use the extracted patient_responsibility directly
+        # For retail (eligible_subtotal > 0): patient_responsibility = eligible items + tax
+        # For prescriptions/EOBs (eligible_subtotal = 0): use extracted values directly
         document_type = parsed.get("document_type") or "unknown"
         if document_type in ("receipt", "prescription") and eligible_subtotal > 0:
             patient_responsibility = eligible_subtotal + tax_on_eligible

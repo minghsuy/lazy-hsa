@@ -93,11 +93,11 @@ Provider-specific extraction prompts activate automatically based on filename/co
 | Provider | Triggers | Special Handling |
 |----------|----------|------------------|
 | **Costco** | "costco", "store 423" | Looks for "F" column marker, sums only F-marked items |
-| **CVS** | "cvs" | FSA/HSA labels, Rx numbers for prescriptions |
+| **CVS** | "cvs" | Prescription vs OTC: copay (AMOUNT DUE) for Rx, FSA markers for OTC, 2-digit year handling |
 | **Walgreens** | "walgreens" | FSA/HSA markers, copay extraction |
 | **Amazon** | "amazon" | Extracts Grand Total directly (includes tax) |
-| **Express Scripts** | "express scripts", "esrx" | Mail-order pharmacy, medication name extraction |
-| **Sutter** | "sutter", "pamf" | Hospital/clinic bills, Patient Responsibility field |
+| **Express Scripts** | "express scripts", "esrx" | Mail-order pharmacy, **multi-claim extraction**, medication name extraction |
+| **Sutter** | "sutter", "pamf" | Hospital/clinic bills, **multi-claim extraction**, guarantor vs patient distinction |
 | **Aetna** | "aetna" (filename or content) | Medical EOB, **multi-claim extraction**, text-only via pdfplumber |
 | **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" | Vision EOB format |
