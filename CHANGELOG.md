@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **CVS Prescription Extraction**: Prescriptions now use copay (AMOUNT DUE) instead of retail price
+  - Previously extracted $144.99 (retail) instead of $70.54 (copay) for Rx receipts
+  - Prescriptions set `document_type: "prescription"` with `eligible_subtotal: 0` to skip retail tax calc
+  - 2-digit year dates correctly interpreted (`1/23/26` → 2026, not 2023)
+  - `provider_name: "CVS"` set explicitly for consistent naming
+
+### Changed
+- Added `billed_amount` and `patient_responsibility` fields to JSON extraction template
+- Year in CVS date format hint now injected dynamically (no hardcoded year)
+- Updated CLAUDE.md Provider Skills table: CVS, Express Scripts, Sutter descriptions
+
 ## [1.1.1] - 2026-01-31
 
 ### Fixed
