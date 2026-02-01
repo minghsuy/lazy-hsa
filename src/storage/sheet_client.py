@@ -45,7 +45,7 @@ class ReceiptRecord:
     notes: str
     # New fields for EOB linking (Phase 4)
     original_provider: str = ""  # For EOBs: who actually provided the service
-    linked_record_id: int | None = None  # Bidirectional link between EOB and statement
+    linked_record_id: str | None = None  # Comma-separated IDs for linked records
     is_authoritative: bool = False  # EOB = True when linked, use this amount for reimbursement
 
 
@@ -307,6 +307,16 @@ class GSheetsClient:
         matches.sort(key=lambda r: int(r.get("ID", 0)), reverse=True)
         return matches
 
+    @staticmethod
+    def _append_link_id(existing: str | int | None, new_id: int) -> str:
+        """Append a linked ID to an existing pipe-separated list, avoiding duplicates."""
+        if not existing:
+            return str(new_id)
+        existing_ids = {s.strip() for s in str(existing).split("|")}
+        if str(new_id) in existing_ids:
+            return str(existing)
+        return f"{existing}|{new_id}"
+
     def link_records(self, eob_id: int, statement_id: int) -> bool:
         """Link an EOB record to a statement record bidirectionally.
 
@@ -314,6 +324,7 @@ class GSheetsClient:
         - EOB is marked as authoritative (use its amount for reimbursement)
         - Statement gets linked_record_id pointing to EOB
         - Notes updated with variance if amounts differ
+        - Supports multiple links (comma-separated IDs)
 
         Args:
             eob_id: ID of the EOB record
@@ -342,7 +353,7 @@ class GSheetsClient:
             if abs(variance) > 0.01:
                 variance_note = f"[Variance: ${variance:+.2f} vs statement]"
 
-        # Update EOB: mark authoritative, link to statement
+        # Update EOB: mark authoritative, append link to statement
         eob_notes = eob_record.get("Notes") or ""
         if variance_note:
             eob_notes = f"{variance_note} {eob_notes}".strip()
@@ -350,13 +361,15 @@ class GSheetsClient:
         self.update_record(
             eob_id,
             {
-                "Linked Record ID": statement_id,
+                "Linked Record ID": self._append_link_id(
+                    eob_record.get("Linked Record ID"), statement_id
+                ),
                 "Is Authoritative": "Yes",
                 "Notes": eob_notes,
             },
         )
 
-        # Update statement: link to EOB, not authoritative
+        # Update statement: append link to EOB, not authoritative
         stmt_notes = statement_record.get("Notes") or ""
         link_note = f"[Linked to EOB #{eob_id}]"
         if link_note not in stmt_notes:
@@ -365,7 +378,9 @@ class GSheetsClient:
         self.update_record(
             statement_id,
             {
-                "Linked Record ID": eob_id,
+                "Linked Record ID": self._append_link_id(
+                    statement_record.get("Linked Record ID"), eob_id
+                ),
                 "Is Authoritative": "No",
                 "Notes": stmt_notes,
             },
