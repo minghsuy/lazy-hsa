@@ -1,6 +1,5 @@
 """Google Sheets Client for HSA Receipt System - manages tracking spreadsheet"""
 
-import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -345,13 +344,10 @@ class GSheetsClient:
             return False
 
         # Calculate variance for notes
-        variance_note = ""
-        with contextlib.suppress(ValueError, TypeError):
-            eob_amount = float(eob_record.get("Patient Responsibility", 0))
-            stmt_amount = float(statement_record.get("Patient Responsibility", 0))
-            variance = eob_amount - stmt_amount
-            if abs(variance) > 0.01:
-                variance_note = f"[Variance: ${variance:+.2f} vs statement]"
+        eob_amount = _safe_float(eob_record.get("Patient Responsibility"))
+        stmt_amount = _safe_float(statement_record.get("Patient Responsibility"))
+        variance = eob_amount - stmt_amount
+        variance_note = f"[Variance: ${variance:+.2f} vs statement]" if abs(variance) > 0.01 else ""
 
         # Update EOB: mark authoritative, append link to statement
         eob_notes = eob_record.get("Notes") or ""
