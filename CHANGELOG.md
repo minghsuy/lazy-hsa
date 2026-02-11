@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Unmatched statements (no corresponding EOB) and unmatched EOB claims
   - Amount variance alerts between linked record pairs
   - `--year` option (defaults to current year)
+- **Per-patient OOP breakdown**: shows each family member's spending and % of OOP max
+- **Auto-suggest links**: fuzzy-matches unmatched EOBs to statements by patient, provider, and date
+  - Confidence tiers: exact date (3 stars), within 3 days (2 stars), within 7 days (1 star)
+  - Uses Original Provider field on EOBs for cross-payer matching (e.g., Aetna EOB → Sutter statement)
+- **Push to Sheets** (`--push` flag): writes reconciliation summary to a Reconciliation worksheet
+  - OOP progress, per-patient breakdown, and reconciliation status counts
+  - Creates worksheet automatically if it doesn't exist
 - `oop_max` config field under `hsa:` section (default: $6,000)
 
 ## [1.1.2] - 2026-02-01

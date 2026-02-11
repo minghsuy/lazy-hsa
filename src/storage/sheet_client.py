@@ -528,6 +528,123 @@ class GSheetsClient:
         )
         return {"total_oop": total_oop}
 
+    def get_oop_breakdown_by_patient(self, year: int) -> list[dict]:
+        """Get per-patient OOP spending breakdown for a given year.
+
+        Groups Patient Responsibility by patient for countable, HSA-eligible records.
+        Returns list sorted by total_oop descending.
+        """
+        records = self.get_all_records()
+        by_patient: dict[str, float] = {}
+
+        for r in records:
+            if (
+                self._is_countable_record(r)
+                and r.get("HSA Eligible") == "Yes"
+                and self._matches_year(r, year)
+            ):
+                patient = r.get("Patient", "Unknown")
+                by_patient[patient] = by_patient.get(patient, 0.0) + _safe_float(
+                    r.get("Patient Responsibility")
+                )
+
+        return sorted(
+            [{"patient": p, "total_oop": t} for p, t in by_patient.items()],
+            key=lambda x: x["total_oop"],
+            reverse=True,
+        )
+
+    def suggest_record_links(
+        self, year: int, date_tolerance_days: int = 7
+    ) -> dict[str, list[dict]]:
+        """Suggest links between unmatched EOBs and statements.
+
+        Matches on same patient + fuzzy provider + date within tolerance.
+        Uses Original Provider on EOBs for provider matching.
+
+        Confidence tiers:
+          - exact date = high (3 stars)
+          - ≤3 days = medium (2 stars)
+          - ≤7 days (or tolerance) = low (1 star)
+        """
+        from datetime import datetime  # noqa: F811
+
+        unmatched = self.get_unmatched_records(year)
+        eob_suggestions: list[dict] = []
+        stmt_suggestions: list[dict] = []
+
+        def _parse_date(date_str: str) -> datetime | None:
+            try:
+                return datetime.strptime(date_str, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                return None
+
+        def _find_matches(source: dict, candidates: list[dict], use_original_provider: bool):
+            source_patient = source.get("Patient", "")
+            source_provider = (
+                source.get("Original Provider") or source.get("Provider", "")
+                if use_original_provider
+                else source.get("Provider", "")
+            )
+            source_date = _parse_date(source.get("Service Date", ""))
+            if not source_date or not source_patient:
+                return []
+
+            matches = []
+            for candidate in candidates:
+                if candidate.get("Patient", "") != source_patient:
+                    continue
+                cand_provider = candidate.get("Provider", "")
+                if not self._providers_match(source_provider, cand_provider):
+                    continue
+                cand_date = _parse_date(candidate.get("Service Date", ""))
+                if not cand_date:
+                    continue
+                diff_days = abs((source_date - cand_date).days)
+                if diff_days > date_tolerance_days:
+                    continue
+
+                if diff_days == 0:
+                    confidence, stars = "high", 3
+                elif diff_days <= 3:
+                    confidence, stars = "medium", 2
+                else:
+                    confidence, stars = "low", 1
+
+                matches.append(
+                    {
+                        "record_id": candidate.get("ID", ""),
+                        "provider": cand_provider,
+                        "service_date": candidate.get("Service Date", ""),
+                        "amount": _safe_float(candidate.get("Patient Responsibility")),
+                        "date_diff_days": diff_days,
+                        "confidence": confidence,
+                        "stars": stars,
+                    }
+                )
+
+            matches.sort(key=lambda m: (m["date_diff_days"], -m["amount"]))
+            return matches
+
+        # EOBs looking for matching statements
+        for eob in unmatched["unmatched_eobs"]:
+            matches = _find_matches(
+                eob, unmatched["unmatched_statements"], use_original_provider=True
+            )
+            if matches:
+                eob_suggestions.append({"record": eob, "matches": matches})
+
+        # Statements looking for matching EOBs
+        for stmt in unmatched["unmatched_statements"]:
+            matches = _find_matches(stmt, unmatched["unmatched_eobs"], use_original_provider=False)
+            if matches:
+                stmt_suggestions.append({"record": stmt, "matches": matches})
+
+        return {
+            "eob_suggestions": eob_suggestions,
+            "statement_suggestions": stmt_suggestions,
+        }
+
     def get_unmatched_records(self, year: int) -> dict[str, list[dict]]:
         """Find records without matching counterparts for a given year.
 
@@ -629,6 +746,63 @@ class GSheetsClient:
                     )
 
         return variances
+
+    def push_reconciliation_summary(
+        self,
+        year: int,
+        oop_progress: float,
+        oop_max: float,
+        patient_breakdown: list[dict],
+        unmatched_counts: dict[str, int],
+        variance_count: int,
+    ) -> str:
+        """Push reconciliation summary to a Reconciliation worksheet.
+
+        Gets or creates a 'Reconciliation' worksheet in the existing spreadsheet.
+        Clears and rewrites all content each time.
+
+        Returns the spreadsheet URL.
+        """
+        from datetime import datetime  # noqa: F811
+
+        # Ensure spreadsheet is initialized via _get_worksheet()
+        self._get_worksheet()
+
+        try:
+            ws = self._spreadsheet.worksheet("Reconciliation")
+        except Exception:
+            ws = self._spreadsheet.add_worksheet(title="Reconciliation", rows=100, cols=6)
+
+        pct = (oop_progress / oop_max * 100) if oop_max > 0 else 0
+
+        rows = [
+            [f"HSA Reconciliation — {year}"],
+            [f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"],
+            [],
+            ["Out-of-Pocket Summary"],
+            ["Total OOP", f"${oop_progress:,.2f}"],
+            ["OOP Max", f"${oop_max:,.2f}"],
+            ["Progress", f"{pct:.0f}%"],
+            ["Remaining", f"${max(0, oop_max - oop_progress):,.2f}"],
+            [],
+            ["Per-Patient Breakdown"],
+            ["Patient", "Total OOP", "% of Max"],
+        ]
+
+        for entry in patient_breakdown:
+            p_pct = (entry["total_oop"] / oop_max * 100) if oop_max > 0 else 0
+            rows.append([entry["patient"], f"${entry['total_oop']:,.2f}", f"{p_pct:.1f}%"])
+
+        rows.append([])
+        rows.append(["Reconciliation Status"])
+        rows.append(["Unmatched Statements", str(unmatched_counts.get("statements", 0))])
+        rows.append(["Unmatched EOBs", str(unmatched_counts.get("eobs", 0))])
+        rows.append(["Amount Variances", str(variance_count)])
+
+        ws.clear()
+        ws.update("A1", rows, value_input_option="USER_ENTERED")
+
+        return self._spreadsheet.url
 
 
 def create_record_from_extraction(

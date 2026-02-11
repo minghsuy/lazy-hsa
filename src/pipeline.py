@@ -702,15 +702,19 @@ class HSAReceiptPipeline:
         """Get reconciliation report for a given year."""
         oop_max = self.config.get("hsa", {}).get("oop_max", 6000)
         oop_progress = self.sheets.get_oop_progress(year)
+        patient_breakdown = self.sheets.get_oop_breakdown_by_patient(year)
         unmatched = self.sheets.get_unmatched_records(year)
         variances = self.sheets.get_linked_variances(year)
+        suggestions = self.sheets.suggest_record_links(year)
 
         return {
             "year": year,
             "oop_max": oop_max,
             "oop_progress": oop_progress,
+            "patient_breakdown": patient_breakdown,
             "unmatched": unmatched,
             "variances": variances,
+            "suggestions": suggestions,
         }
 
 
@@ -835,13 +839,34 @@ try:
     @click.option(
         "--year", default=datetime.now().year, type=int, help="Year to reconcile (default: current)"
     )
+    @click.option("--push", is_flag=True, help="Push summary to Google Sheets Reconciliation tab")
     @click.pass_context
-    def reconcile(ctx, year):
+    def reconcile(ctx, year, push):
         """Reconcile EOBs against statements and track OOP progress."""
         pipeline = ctx.obj["pipeline"]
         data = pipeline.get_reconciliation(year)
 
-        _print_oop_progress(year, data["oop_progress"]["total_oop"], data["oop_max"])
+        total_oop = data["oop_progress"]["total_oop"]
+        oop_max = data["oop_max"]
+
+        _print_oop_progress(year, total_oop, oop_max)
+
+        # Per-patient breakdown
+        breakdown = data.get("patient_breakdown", [])
+        if breakdown:
+            console.print("\n[bold]Per-Patient Breakdown[/bold]")
+            table = Table()
+            table.add_column("Patient")
+            table.add_column("Total OOP", justify="right")
+            table.add_column("% of Max", justify="right")
+            for entry in breakdown:
+                pct = (entry["total_oop"] / oop_max * 100) if oop_max > 0 else 0
+                table.add_row(
+                    entry["patient"],
+                    f"${entry['total_oop']:,.2f}",
+                    f"{pct:.1f}%",
+                )
+            console.print(table)
 
         record_columns = [
             ("ID", "right"),
@@ -889,6 +914,68 @@ try:
             _eob_row,
         )
 
+        # Suggested links
+        suggestions = data.get("suggestions", {})
+        eob_sugg = suggestions.get("eob_suggestions", [])
+        stmt_sugg = suggestions.get("statement_suggestions", [])
+
+        if eob_sugg:
+            console.print(f"\n[bold]Suggested Links for Unmatched EOBs ({len(eob_sugg)})[/bold]")
+            for entry in eob_sugg:
+                rec = entry["record"]
+                provider = rec.get("Original Provider") or rec.get("Provider", "")
+                console.print(
+                    f"\n  EOB #{rec.get('ID', '')}: {provider} | "
+                    f"{rec.get('Service Date', '')} | {rec.get('Patient', '')}"
+                )
+                tbl = Table(show_header=True, pad_edge=False, box=None)
+                tbl.add_column("Confidence")
+                tbl.add_column("Stmt #", justify="right")
+                tbl.add_column("Provider")
+                tbl.add_column("Date")
+                tbl.add_column("Amount", justify="right")
+                tbl.add_column("Date Diff")
+                for m in entry["matches"]:
+                    stars = "\u2605" * m["stars"] + "\u2606" * (3 - m["stars"])
+                    tbl.add_row(
+                        stars,
+                        str(m["record_id"]),
+                        m["provider"],
+                        m["service_date"],
+                        f"${m['amount']:,.2f}",
+                        f"{m['date_diff_days']}d",
+                    )
+                console.print(tbl)
+
+        if stmt_sugg:
+            console.print(
+                f"\n[bold]Suggested Links for Unmatched Statements ({len(stmt_sugg)})[/bold]"
+            )
+            for entry in stmt_sugg:
+                rec = entry["record"]
+                console.print(
+                    f"\n  Stmt #{rec.get('ID', '')}: {rec.get('Provider', '')} | "
+                    f"{rec.get('Service Date', '')} | {rec.get('Patient', '')}"
+                )
+                tbl = Table(show_header=True, pad_edge=False, box=None)
+                tbl.add_column("Confidence")
+                tbl.add_column("EOB #", justify="right")
+                tbl.add_column("Provider")
+                tbl.add_column("Date")
+                tbl.add_column("Amount", justify="right")
+                tbl.add_column("Date Diff")
+                for m in entry["matches"]:
+                    stars = "\u2605" * m["stars"] + "\u2606" * (3 - m["stars"])
+                    tbl.add_row(
+                        stars,
+                        str(m["record_id"]),
+                        m["provider"],
+                        m["service_date"],
+                        f"${m['amount']:,.2f}",
+                        f"{m['date_diff_days']}d",
+                    )
+                console.print(tbl)
+
         # Variances
         variances = data["variances"]
         if variances:
@@ -928,6 +1015,25 @@ try:
             console.print(f"\n[bold yellow]{attention_count} items need attention[/bold yellow]")
         else:
             console.print("\n[bold green]All reconciled[/bold green]")
+
+        # Push to Google Sheets
+        if push:
+            try:
+                unmatched = data["unmatched"]
+                url = pipeline.sheets.push_reconciliation_summary(
+                    year=year,
+                    oop_progress=total_oop,
+                    oop_max=oop_max,
+                    patient_breakdown=breakdown,
+                    unmatched_counts={
+                        "statements": len(unmatched["unmatched_statements"]),
+                        "eobs": len(unmatched["unmatched_eobs"]),
+                    },
+                    variance_count=len(variances),
+                )
+                console.print(f"\n[green]Pushed to Google Sheets:[/green] {url}")
+            except Exception as e:
+                console.print(f"\n[red]Failed to push to Sheets: {e}[/red]")
 
     @cli.command("email-scan")
     @click.option("--since", help="Scan emails since date (YYYY-MM-DD)")

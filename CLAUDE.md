@@ -79,6 +79,7 @@ lazy-hsa summary
 # Reconcile EOBs and statements
 lazy-hsa reconcile              # Current year
 lazy-hsa reconcile --year 2024  # Specific year
+lazy-hsa reconcile --push       # Push summary to Google Sheets
 ```
 
 ## Key Files
@@ -166,9 +167,4 @@ uv run python src/processors/llm_extractor.py test_receipts/receipt.pdf
 
 ## Backlog
 
-### P2 (Soon)
-- Reconcile: auto-suggest links for unmatched records
-- Reconcile: per-patient OOP breakdown
-
-### P3 (Later)
-- Dashboard: push reconciliation summary to Google Sheets
+No outstanding items — all reconciliation features shipped.

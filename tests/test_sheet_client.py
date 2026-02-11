@@ -1,6 +1,6 @@
 """Tests for sheet_client.py - summary and filtering logic."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -430,3 +430,304 @@ class TestGetLinkedVariances:
         # Only one variance (ID 10 vs 11, diff=$10), ID 10 vs 12 matches
         assert len(result) == 1
         assert result[0]["variance"] == pytest.approx(10.00)
+
+
+class TestGetOopBreakdownByPatient:
+    @pytest.fixture
+    def client(self):
+        return _make_client()
+
+    def test_groups_by_patient(self, client):
+        records = [
+            {
+                "Service Date": "2026-01-15",
+                "Patient Responsibility": "100.00",
+                "Patient": "Alice",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "",
+            },
+            {
+                "Service Date": "2026-02-20",
+                "Patient Responsibility": "250.00",
+                "Patient": "Bob",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "",
+            },
+            {
+                "Service Date": "2026-03-10",
+                "Patient Responsibility": "50.00",
+                "Patient": "Alice",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "Yes",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_breakdown_by_patient(2026)
+        assert len(result) == 2
+        assert result[0]["patient"] == "Bob"
+        assert result[0]["total_oop"] == pytest.approx(250.00)
+        assert result[1]["patient"] == "Alice"
+        assert result[1]["total_oop"] == pytest.approx(150.00)
+
+    def test_sorts_descending(self, client):
+        records = [
+            {
+                "Service Date": "2026-01-01",
+                "Patient Responsibility": "10.00",
+                "Patient": "Charlie",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "",
+            },
+            {
+                "Service Date": "2026-01-01",
+                "Patient Responsibility": "500.00",
+                "Patient": "Alice",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_breakdown_by_patient(2026)
+        assert result[0]["patient"] == "Alice"
+        assert result[1]["patient"] == "Charlie"
+
+    def test_skips_non_authoritative(self, client):
+        records = [
+            {
+                "Service Date": "2026-05-01",
+                "Patient Responsibility": "200.00",
+                "Patient": "Alice",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "No",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_breakdown_by_patient(2026)
+        assert len(result) == 0
+
+    def test_skips_non_eligible(self, client):
+        records = [
+            {
+                "Service Date": "2026-05-01",
+                "Patient Responsibility": "75.00",
+                "Patient": "Bob",
+                "HSA Eligible": "No",
+                "Is Authoritative": "",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_breakdown_by_patient(2026)
+        assert len(result) == 0
+
+    def test_skips_wrong_year(self, client):
+        records = [
+            {
+                "Service Date": "2025-12-15",
+                "Patient Responsibility": "300.00",
+                "Patient": "Alice",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_breakdown_by_patient(2026)
+        assert len(result) == 0
+
+    def test_empty_records(self, client):
+        with patch.object(client, "get_all_records", return_value=[]):
+            result = client.get_oop_breakdown_by_patient(2026)
+        assert result == []
+
+
+class TestSuggestRecordLinks:
+    @pytest.fixture
+    def client(self):
+        return _make_client()
+
+    def _unmatched_eobs(self):
+        return [
+            {
+                "ID": "10",
+                "Service Date": "2026-01-06",
+                "Provider": "Aetna",
+                "Original Provider": "Sutter",
+                "Patient": "Alice",
+                "Patient Responsibility": "185.00",
+                "Document Type": "eob",
+                "Linked Record ID": "",
+                "Is Authoritative": "Yes",
+            },
+        ]
+
+    def _unmatched_stmts(self):
+        return [
+            {
+                "ID": "4",
+                "Service Date": "2026-01-06",
+                "Provider": "Sutter Health",
+                "Patient": "Alice",
+                "Patient Responsibility": "185.00",
+                "Document Type": "statement",
+                "Linked Record ID": "",
+                "Is Authoritative": "",
+            },
+        ]
+
+    def test_exact_date_high_confidence(self, client):
+        with patch.object(
+            client,
+            "get_unmatched_records",
+            return_value={
+                "unmatched_eobs": self._unmatched_eobs(),
+                "unmatched_statements": self._unmatched_stmts(),
+            },
+        ):
+            result = client.suggest_record_links(2026)
+        assert len(result["eob_suggestions"]) == 1
+        match = result["eob_suggestions"][0]["matches"][0]
+        assert match["confidence"] == "high"
+        assert match["stars"] == 3
+        assert match["date_diff_days"] == 0
+
+    def test_date_within_3d_medium_confidence(self, client):
+        stmts = self._unmatched_stmts()
+        stmts[0]["Service Date"] = "2026-01-08"  # 2 days off
+        with patch.object(
+            client,
+            "get_unmatched_records",
+            return_value={
+                "unmatched_eobs": self._unmatched_eobs(),
+                "unmatched_statements": stmts,
+            },
+        ):
+            result = client.suggest_record_links(2026)
+        assert len(result["eob_suggestions"]) == 1
+        match = result["eob_suggestions"][0]["matches"][0]
+        assert match["confidence"] == "medium"
+        assert match["stars"] == 2
+
+    def test_beyond_tolerance_no_match(self, client):
+        stmts = self._unmatched_stmts()
+        stmts[0]["Service Date"] = "2026-01-20"  # 14 days off
+        with patch.object(
+            client,
+            "get_unmatched_records",
+            return_value={
+                "unmatched_eobs": self._unmatched_eobs(),
+                "unmatched_statements": stmts,
+            },
+        ):
+            result = client.suggest_record_links(2026)
+        assert len(result["eob_suggestions"]) == 0
+
+    def test_different_patient_no_match(self, client):
+        stmts = self._unmatched_stmts()
+        stmts[0]["Patient"] = "Bob"
+        with patch.object(
+            client,
+            "get_unmatched_records",
+            return_value={
+                "unmatched_eobs": self._unmatched_eobs(),
+                "unmatched_statements": stmts,
+            },
+        ):
+            result = client.suggest_record_links(2026)
+        assert len(result["eob_suggestions"]) == 0
+
+    def test_provider_mismatch_no_match(self, client):
+        stmts = self._unmatched_stmts()
+        stmts[0]["Provider"] = "Stanford"
+        with patch.object(
+            client,
+            "get_unmatched_records",
+            return_value={
+                "unmatched_eobs": self._unmatched_eobs(),
+                "unmatched_statements": stmts,
+            },
+        ):
+            result = client.suggest_record_links(2026)
+        assert len(result["eob_suggestions"]) == 0
+
+    def test_empty_records_empty_result(self, client):
+        with patch.object(
+            client,
+            "get_unmatched_records",
+            return_value={"unmatched_eobs": [], "unmatched_statements": []},
+        ):
+            result = client.suggest_record_links(2026)
+        assert result["eob_suggestions"] == []
+        assert result["statement_suggestions"] == []
+
+
+class TestPushReconciliationSummary:
+    @pytest.fixture
+    def client(self):
+        c = _make_client()
+        # Mock the spreadsheet and worksheet infrastructure
+        mock_ws = MagicMock()
+        mock_spreadsheet = MagicMock()
+        mock_spreadsheet.url = "https://docs.google.com/spreadsheets/d/abc123"
+        mock_spreadsheet.worksheet.return_value = mock_ws
+        c._spreadsheet = mock_spreadsheet
+        c._worksheet = MagicMock()  # So _get_worksheet() short-circuits
+        return c
+
+    def test_writes_to_existing_worksheet(self, client):
+        ws = client._spreadsheet.worksheet.return_value
+        url = client.push_reconciliation_summary(
+            year=2026,
+            oop_progress=3500.00,
+            oop_max=6000,
+            patient_breakdown=[
+                {"patient": "Alice", "total_oop": 2000.00},
+                {"patient": "Bob", "total_oop": 1500.00},
+            ],
+            unmatched_counts={"statements": 2, "eobs": 1},
+            variance_count=3,
+        )
+        ws.clear.assert_called_once()
+        ws.update.assert_called_once()
+        rows = ws.update.call_args[0][1]
+        assert rows[0] == ["HSA Reconciliation \u2014 2026"]
+        assert url == "https://docs.google.com/spreadsheets/d/abc123"
+
+    def test_creates_worksheet_on_missing(self, client):
+        client._spreadsheet.worksheet.side_effect = Exception("not found")
+        new_ws = MagicMock()
+        client._spreadsheet.add_worksheet.return_value = new_ws
+
+        client.push_reconciliation_summary(
+            year=2026,
+            oop_progress=0,
+            oop_max=6000,
+            patient_breakdown=[],
+            unmatched_counts={"statements": 0, "eobs": 0},
+            variance_count=0,
+        )
+        client._spreadsheet.add_worksheet.assert_called_once_with(
+            title="Reconciliation", rows=100, cols=6
+        )
+        new_ws.clear.assert_called_once()
+        new_ws.update.assert_called_once()
+
+    def test_content_structure(self, client):
+        ws = client._spreadsheet.worksheet.return_value
+        client.push_reconciliation_summary(
+            year=2026,
+            oop_progress=1200.50,
+            oop_max=6000,
+            patient_breakdown=[{"patient": "Alice", "total_oop": 1200.50}],
+            unmatched_counts={"statements": 1, "eobs": 0},
+            variance_count=2,
+        )
+        rows = ws.update.call_args[0][1]
+        # Check OOP summary values
+        assert ["Total OOP", "$1,200.50"] in rows
+        assert ["OOP Max", "$6,000.00"] in rows
+        assert ["Progress", "20%"] in rows
+        # Check patient row
+        assert ["Alice", "$1,200.50", "20.0%"] in rows
+        # Check reconciliation status
+        assert ["Unmatched Statements", "1"] in rows
+        assert ["Unmatched EOBs", "0"] in rows
+        assert ["Amount Variances", "2"] in rows
