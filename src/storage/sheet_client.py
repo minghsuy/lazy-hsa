@@ -434,6 +434,25 @@ class GSheetsClient:
         """
         return record.get("Is Authoritative") != "No"
 
+    @staticmethod
+    def _matches_year(record: dict, year: int) -> bool:
+        """Check if a record's service date falls in the given year."""
+        service_date = record.get("Service Date", "")
+        if not service_date:
+            return False
+        try:
+            return int(service_date[:4]) == year
+        except (ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def _parse_record_id(value) -> int | None:
+        """Parse a record ID to int, returning None on failure."""
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return None
+
     def get_unreimbursed_total(self) -> float:
         """Calculate total unreimbursed amount, excluding non-authoritative records.
 
@@ -493,6 +512,123 @@ class GSheetsClient:
                 summary[year]["total_reimbursed"] += _safe_float(record.get("Reimbursement Amount"))
 
         return summary
+
+    def get_oop_progress(self, year: int) -> dict[str, float]:
+        """Get out-of-pocket spending progress for a given year.
+
+        Sums Patient Responsibility for countable, HSA-eligible records.
+        """
+        records = self.get_all_records()
+        total_oop = sum(
+            _safe_float(r.get("Patient Responsibility"))
+            for r in records
+            if self._is_countable_record(r)
+            and r.get("HSA Eligible") == "Yes"
+            and self._matches_year(r, year)
+        )
+        return {"total_oop": total_oop}
+
+    def get_unmatched_records(self, year: int) -> dict[str, list[dict]]:
+        """Find records without matching counterparts for a given year.
+
+        Unmatched statements: non-EOB, no Linked Record ID, not non-authoritative.
+        Unmatched EOBs: EOB type, no Linked Record ID.
+        """
+        records = self.get_all_records()
+        unmatched_statements = []
+        unmatched_eobs = []
+
+        for record in records:
+            if not self._matches_year(record, year):
+                continue
+            if record.get("Linked Record ID"):
+                continue
+
+            if record.get("Document Type") == "eob":
+                unmatched_eobs.append(record)
+            elif record.get("Is Authoritative") != "No":
+                unmatched_statements.append(record)
+
+        return {
+            "unmatched_statements": unmatched_statements,
+            "unmatched_eobs": unmatched_eobs,
+        }
+
+    @staticmethod
+    def _parse_linked_ids(linked_ids_str: str | int | None) -> list[int]:
+        """Parse a pipe-separated string of record IDs into a list of ints."""
+        if not linked_ids_str:
+            return []
+        parsed = []
+        for part in str(linked_ids_str).split("|"):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                parsed.append(int(part))
+            except (ValueError, TypeError):
+                continue
+        return parsed
+
+    def get_linked_variances(self, year: int) -> list[dict]:
+        """Find amount variances between linked EOB and statement pairs.
+
+        Looks for authoritative records with linked IDs, compares Patient
+        Responsibility amounts, reports differences > $0.01.
+        """
+        records = self.get_all_records()
+        records_by_id: dict[int, dict] = {}
+        for r in records:
+            record_id = self._parse_record_id(r.get("ID", 0))
+            if record_id is not None:
+                records_by_id[record_id] = r
+
+        variances = []
+        seen_pairs: set[tuple[int, int]] = set()
+
+        for record in records:
+            if record.get("Is Authoritative") != "Yes":
+                continue
+            if not self._matches_year(record, year):
+                continue
+
+            linked_ids = self._parse_linked_ids(record.get("Linked Record ID"))
+            if not linked_ids:
+                continue
+
+            eob_id = self._parse_record_id(record.get("ID", 0))
+            if eob_id is None:
+                continue
+            eob_amount = _safe_float(record.get("Patient Responsibility"))
+
+            for linked_id in linked_ids:
+                pair = (min(eob_id, linked_id), max(eob_id, linked_id))
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+
+                linked_record = records_by_id.get(linked_id)
+                if not linked_record:
+                    continue
+
+                stmt_amount = _safe_float(linked_record.get("Patient Responsibility"))
+                variance = eob_amount - stmt_amount
+
+                if abs(variance) > 0.01:
+                    variances.append(
+                        {
+                            "eob_id": eob_id,
+                            "statement_id": linked_id,
+                            "eob_amount": eob_amount,
+                            "statement_amount": stmt_amount,
+                            "variance": variance,
+                            "provider": record.get("Provider", ""),
+                            "patient": record.get("Patient", ""),
+                            "service_date": record.get("Service Date", ""),
+                        }
+                    )
+
+        return variances
 
 
 def create_record_from_extraction(

@@ -75,6 +75,10 @@ lazy-hsa email-scan --since 2024-01-01
 
 # View summary
 lazy-hsa summary
+
+# Reconcile EOBs and statements
+lazy-hsa reconcile              # Current year
+lazy-hsa reconcile --year 2024  # Specific year
 ```
 
 ## Key Files
@@ -159,3 +163,13 @@ uv run python src/processors/llm_extractor.py test_receipts/receipt.pdf
 ## Config Location
 - Credentials: `config/credentials/` (gitignored)
 - Config: `config/config.yaml` (gitignored, copy from config.example.yaml)
+
+## Backlog
+
+### P2 (Soon)
+- **EOB-Statement Reconciliation** — `lazy-hsa reconcile`: OOP tracker, unmatched records, variance alerts
+
+### P3 (Later)
+- Reconcile: auto-suggest links for unmatched records
+- Reconcile: per-patient OOP breakdown
+- Dashboard: push reconciliation summary to Google Sheets

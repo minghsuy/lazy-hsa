@@ -148,6 +148,7 @@ hsa:
   # Set this to when your HSA was established
   start_date: "2024-01-01"
   provider: "Fidelity"  # or "HSA Bank", "Lively", etc.
+  oop_max: 6000  # Annual out-of-pocket maximum (family)
 
 # =============================================================================
 # Backup Settings (optional)

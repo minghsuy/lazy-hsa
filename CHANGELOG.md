@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Reconciliation command** (`lazy-hsa reconcile`): cross-reference EOBs and statements
+  - OOP max progress bar with color-coded thresholds
+  - Unmatched statements (no corresponding EOB) and unmatched EOB claims
+  - Amount variance alerts between linked record pairs
+  - `--year` option (defaults to current year)
+- `oop_max` config field under `hsa:` section (default: $6,000)
+
 ## [1.1.2] - 2026-02-01
 
 ### Fixed

@@ -188,3 +188,245 @@ class TestGetSummaryByYear:
         # Only the authoritative record counted
         assert summary[2026]["total_responsibility"] == pytest.approx(85.07)
         assert summary[2026]["count"] == 1
+
+
+class TestGetOopProgress:
+    @pytest.fixture
+    def client(self):
+        return _make_client()
+
+    def test_sums_countable_hsa_eligible(self, client):
+        records = [
+            {
+                "Service Date": "2026-03-15",
+                "Patient Responsibility": "100.00",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "",
+            },
+            {
+                "Service Date": "2026-06-01",
+                "Patient Responsibility": "250.50",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "Yes",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_progress(2026)
+        assert result["total_oop"] == pytest.approx(350.50)
+
+    def test_skips_non_authoritative(self, client):
+        records = [
+            {
+                "Service Date": "2026-03-15",
+                "Patient Responsibility": "100.00",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "No",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_progress(2026)
+        assert result["total_oop"] == pytest.approx(0.0)
+
+    def test_skips_wrong_year(self, client):
+        records = [
+            {
+                "Service Date": "2025-12-15",
+                "Patient Responsibility": "500.00",
+                "HSA Eligible": "Yes",
+                "Is Authoritative": "",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_progress(2026)
+        assert result["total_oop"] == pytest.approx(0.0)
+
+    def test_skips_non_eligible(self, client):
+        records = [
+            {
+                "Service Date": "2026-03-15",
+                "Patient Responsibility": "75.00",
+                "HSA Eligible": "No",
+                "Is Authoritative": "",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_oop_progress(2026)
+        assert result["total_oop"] == pytest.approx(0.0)
+
+    def test_empty_records(self, client):
+        with patch.object(client, "get_all_records", return_value=[]):
+            result = client.get_oop_progress(2026)
+        assert result["total_oop"] == pytest.approx(0.0)
+
+
+class TestGetUnmatchedRecords:
+    @pytest.fixture
+    def client(self):
+        return _make_client()
+
+    def test_finds_standalone_statements(self, client):
+        records = [
+            {
+                "ID": "1",
+                "Service Date": "2026-02-01",
+                "Document Type": "statement",
+                "Linked Record ID": "",
+                "Is Authoritative": "",
+                "Provider": "Sutter",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_unmatched_records(2026)
+        assert len(result["unmatched_statements"]) == 1
+        assert result["unmatched_statements"][0]["ID"] == "1"
+
+    def test_finds_unlinked_eobs(self, client):
+        records = [
+            {
+                "ID": "5",
+                "Service Date": "2026-03-01",
+                "Document Type": "eob",
+                "Linked Record ID": "",
+                "Is Authoritative": "Yes",
+                "Provider": "Aetna",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_unmatched_records(2026)
+        assert len(result["unmatched_eobs"]) == 1
+        assert result["unmatched_eobs"][0]["ID"] == "5"
+
+    def test_skips_linked_records(self, client):
+        records = [
+            {
+                "ID": "2",
+                "Service Date": "2026-01-10",
+                "Document Type": "statement",
+                "Linked Record ID": "3",
+                "Is Authoritative": "No",
+                "Provider": "Sutter",
+            },
+            {
+                "ID": "3",
+                "Service Date": "2026-01-10",
+                "Document Type": "eob",
+                "Linked Record ID": "2",
+                "Is Authoritative": "Yes",
+                "Provider": "Aetna",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_unmatched_records(2026)
+        assert len(result["unmatched_statements"]) == 0
+        assert len(result["unmatched_eobs"]) == 0
+
+    def test_filters_by_year(self, client):
+        records = [
+            {
+                "ID": "1",
+                "Service Date": "2025-11-01",
+                "Document Type": "statement",
+                "Linked Record ID": "",
+                "Is Authoritative": "",
+                "Provider": "Stanford",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_unmatched_records(2026)
+        assert len(result["unmatched_statements"]) == 0
+        assert len(result["unmatched_eobs"]) == 0
+
+
+class TestGetLinkedVariances:
+    @pytest.fixture
+    def client(self):
+        return _make_client()
+
+    def test_detects_variance(self, client):
+        records = [
+            {
+                "ID": "3",
+                "Service Date": "2026-01-15",
+                "Patient Responsibility": "175.00",
+                "Is Authoritative": "Yes",
+                "Linked Record ID": "4",
+                "Provider": "Aetna",
+                "Patient": "Alice",
+            },
+            {
+                "ID": "4",
+                "Service Date": "2026-01-15",
+                "Patient Responsibility": "185.00",
+                "Is Authoritative": "No",
+                "Linked Record ID": "3",
+                "Provider": "Sutter",
+                "Patient": "Alice",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_linked_variances(2026)
+        assert len(result) == 1
+        assert result[0]["eob_id"] == 3
+        assert result[0]["statement_id"] == 4
+        assert result[0]["variance"] == pytest.approx(-10.00)
+
+    def test_no_variance_when_amounts_match(self, client):
+        records = [
+            {
+                "ID": "5",
+                "Service Date": "2026-02-01",
+                "Patient Responsibility": "200.00",
+                "Is Authoritative": "Yes",
+                "Linked Record ID": "6",
+                "Provider": "Aetna",
+                "Patient": "Bob",
+            },
+            {
+                "ID": "6",
+                "Service Date": "2026-02-01",
+                "Patient Responsibility": "200.00",
+                "Is Authoritative": "No",
+                "Linked Record ID": "5",
+                "Provider": "Stanford",
+                "Patient": "Bob",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_linked_variances(2026)
+        assert len(result) == 0
+
+    def test_handles_pipe_separated_ids(self, client):
+        records = [
+            {
+                "ID": "10",
+                "Service Date": "2026-03-01",
+                "Patient Responsibility": "300.00",
+                "Is Authoritative": "Yes",
+                "Linked Record ID": "11|12",
+                "Provider": "Aetna",
+                "Patient": "Alice",
+            },
+            {
+                "ID": "11",
+                "Service Date": "2026-03-01",
+                "Patient Responsibility": "290.00",
+                "Is Authoritative": "No",
+                "Linked Record ID": "10",
+                "Provider": "Sutter",
+                "Patient": "Alice",
+            },
+            {
+                "ID": "12",
+                "Service Date": "2026-03-01",
+                "Patient Responsibility": "300.00",
+                "Is Authoritative": "No",
+                "Linked Record ID": "10",
+                "Provider": "Sutter",
+                "Patient": "Alice",
+            },
+        ]
+        with patch.object(client, "get_all_records", return_value=records):
+            result = client.get_linked_variances(2026)
+        # Only one variance (ID 10 vs 11, diff=$10), ID 10 vs 12 matches
+        assert len(result) == 1
+        assert result[0]["variance"] == pytest.approx(10.00)

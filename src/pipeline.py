@@ -23,7 +23,12 @@ from processors.llm_extractor import (
     get_extractor,
 )
 from storage.gdrive_client import GDriveClient
-from storage.sheet_client import GSheetsClient, ReceiptRecord, create_record_from_extraction
+from storage.sheet_client import (
+    GSheetsClient,
+    ReceiptRecord,
+    _safe_float,
+    create_record_from_extraction,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -693,6 +698,21 @@ class HSAReceiptPipeline:
             "total_unreimbursed": unreimbursed,
         }
 
+    def get_reconciliation(self, year: int) -> dict:
+        """Get reconciliation report for a given year."""
+        oop_max = self.config.get("hsa", {}).get("oop_max", 6000)
+        oop_progress = self.sheets.get_oop_progress(year)
+        unmatched = self.sheets.get_unmatched_records(year)
+        variances = self.sheets.get_linked_variances(year)
+
+        return {
+            "year": year,
+            "oop_max": oop_max,
+            "oop_progress": oop_progress,
+            "unmatched": unmatched,
+            "variances": variances,
+        }
+
 
 # CLI using Click
 try:
@@ -773,6 +793,141 @@ try:
 
         console.print(table)
         console.print(f"\n Total Unreimbursed: [bold]${data['total_unreimbursed']:,.2f}[/bold]")
+
+    def _print_oop_progress(year, total_oop, oop_max):
+        """Render the OOP spending progress bar."""
+        remaining = max(0, oop_max - total_oop)
+        pct = (total_oop / oop_max * 100) if oop_max > 0 else 0
+
+        console.print(f"\n[bold]{year} Out-of-Pocket Progress[/bold]")
+        bar_width = 40
+        filled = int(bar_width * min(pct, 100) / 100)
+        empty = bar_width - filled
+        if pct >= 90:
+            color = "red"
+        elif pct >= 70:
+            color = "yellow"
+        else:
+            color = "green"
+        bar = f"[{color}]{'━' * filled}[/{color}]{'━' * empty}"
+        console.print(f"  {bar}  ${total_oop:,.2f} / ${oop_max:,.2f} ({pct:.0f}%)")
+        console.print(f"  Remaining: ${remaining:,.2f}")
+
+    def _print_record_section(title, records, empty_msg, columns, row_fn):
+        """Render a titled table section, or a success message if empty.
+
+        Returns the number of records (for attention counting).
+        Columns are (name, justify) tuples where justify is "right" or None.
+        """
+        if not records:
+            console.print(f"\n[green]{empty_msg}[/green]")
+            return 0
+        console.print(f"\n[bold]{title} ({len(records)})[/bold]")
+        table = Table()
+        for col_name, justify in columns:
+            table.add_column(col_name, justify=justify)
+        for r in records:
+            table.add_row(*row_fn(r))
+        console.print(table)
+        return len(records)
+
+    @cli.command()
+    @click.option(
+        "--year", default=datetime.now().year, type=int, help="Year to reconcile (default: current)"
+    )
+    @click.pass_context
+    def reconcile(ctx, year):
+        """Reconcile EOBs against statements and track OOP progress."""
+        pipeline = ctx.obj["pipeline"]
+        data = pipeline.get_reconciliation(year)
+
+        _print_oop_progress(year, data["oop_progress"]["total_oop"], data["oop_max"])
+
+        record_columns = [
+            ("ID", "right"),
+            ("Date", None),
+            ("Provider", None),
+            ("Patient", None),
+            ("Amount", "right"),
+        ]
+
+        def _stmt_row(r):
+            return (
+                str(r.get("ID", "")),
+                r.get("Service Date", ""),
+                r.get("Provider", ""),
+                r.get("Patient", ""),
+                f"${_safe_float(r.get('Patient Responsibility')):,.2f}",
+                r.get("Document Type", ""),
+            )
+
+        def _eob_row(r):
+            provider = r.get("Original Provider") or r.get("Provider", "")
+            return (
+                str(r.get("ID", "")),
+                r.get("Service Date", ""),
+                provider,
+                r.get("Patient", ""),
+                f"${_safe_float(r.get('Patient Responsibility')):,.2f}",
+            )
+
+        attention_count = 0
+
+        attention_count += _print_record_section(
+            "Statements Without Matching EOB",
+            data["unmatched"]["unmatched_statements"],
+            "All statements have matching EOBs",
+            record_columns + [("Type", None)],
+            _stmt_row,
+        )
+
+        attention_count += _print_record_section(
+            "EOB Claims Without Matching Statement",
+            data["unmatched"]["unmatched_eobs"],
+            "All EOB claims have matching statements",
+            record_columns,
+            _eob_row,
+        )
+
+        # Variances
+        variances = data["variances"]
+        if variances:
+            console.print(f"\n[bold]Amount Variances ({len(variances)})[/bold]")
+            table = Table()
+            for col_name, justify in [
+                ("EOB #", "right"),
+                ("Stmt #", "right"),
+                ("Date", None),
+                ("Provider", None),
+                ("Patient", None),
+                ("EOB Amt", "right"),
+                ("Stmt Amt", "right"),
+                ("Variance", "right"),
+            ]:
+                table.add_column(col_name, justify=justify)
+            for v in variances:
+                var = v["variance"]
+                var_color = "red" if var < 0 else "yellow"
+                table.add_row(
+                    str(v["eob_id"]),
+                    str(v["statement_id"]),
+                    v["service_date"],
+                    v["provider"],
+                    v["patient"],
+                    f"${v['eob_amount']:,.2f}",
+                    f"${v['statement_amount']:,.2f}",
+                    f"[{var_color}]${var:+,.2f}[/{var_color}]",
+                )
+            console.print(table)
+            attention_count += len(variances)
+        else:
+            console.print("\n[green]No amount variances between linked records[/green]")
+
+        # Summary footer
+        if attention_count:
+            console.print(f"\n[bold yellow]{attention_count} items need attention[/bold yellow]")
+        else:
+            console.print("\n[bold green]All reconciled[/bold green]")
 
     @cli.command("email-scan")
     @click.option("--since", help="Scan emails since date (YYYY-MM-DD)")
