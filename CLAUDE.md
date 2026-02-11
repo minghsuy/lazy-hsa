@@ -167,9 +167,8 @@ uv run python src/processors/llm_extractor.py test_receipts/receipt.pdf
 ## Backlog
 
 ### P2 (Soon)
-- **EOB-Statement Reconciliation** — `lazy-hsa reconcile`: OOP tracker, unmatched records, variance alerts
-
-### P3 (Later)
 - Reconcile: auto-suggest links for unmatched records
 - Reconcile: per-patient OOP breakdown
+
+### P3 (Later)
 - Dashboard: push reconciliation summary to Google Sheets
