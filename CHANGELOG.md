@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-23
+
+### Added
+- **Deterministic Aetna EOB parser**: regex-based extraction on pdfplumber text replaces unreliable LLM path
+  - Parses payment summary table + claim detail sections (dates, claim IDs, service types)
+  - Handles multi-patient EOBs with role-based patient mapping (self/spouse/dependent)
+  - Falls back to LLM only if deterministic parse returns no claims
+- **`statement_date` on `MultiClaimExtraction`**: EOB filenames now use statement date instead of earliest service date, preventing collisions when monthly EOBs share overlapping claim dates
+- **`eob_model` config option**: separate, larger LLM model for complex multi-claim EOB extraction
+- **`provider_hint` plumbing**: pipeline passes detected provider skill to `extract_eob()`, enabling Aetna detection even when filename doesn't contain "aetna"
+- **Field name normalization**: data-driven alias loop handles LLM response inconsistency (e.g., `patient` → `patient_name`, `your_share` → `patient_responsibility`)
+
+### Fixed
+- EOB filename collisions: two monthly Aetna EOBs no longer produce identical filenames
+- Service type pollution: raw dollar amounts and percentages no longer leak into the Service Type column
+
+### Changed
+- `max_tokens` for text-based EOB extraction bumped from 4096 to 8192
+- Updated CLAUDE.md Provider Skills table for Aetna
+
+### Security
+- Bump cryptography from 46.0.3 to 46.0.5
+
 ## [1.2.0] - 2026-02-10
 
 ### Added
