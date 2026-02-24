@@ -26,6 +26,10 @@ llm:
   # Set to a vision-capable model if your primary model lacks vision
   # vision_model: "mistral-small3"
 
+  # Larger model for multi-claim EOBs (Aetna, Express Scripts, etc.)
+  # Falls back to primary model if not set
+  # eob_model: "gpt-oss:120b"
+
   # Vision-enabled model processes images directly (no separate OCR needed)
   # For multi-page PDFs, pdfplumber extracts text from all pages
   vision_enabled: true

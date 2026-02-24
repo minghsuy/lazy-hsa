@@ -175,6 +175,7 @@ class HSAReceiptPipeline:
         file_path: str,
         patient_hint: str | None = None,
         dry_run: bool = False,
+        provider_hint: str | None = None,
     ) -> dict | None:
         """Process a multi-claim document (EOB, statement, or claims summary).
 
@@ -194,6 +195,7 @@ class HSAReceiptPipeline:
             file_path: Path to the document
             patient_hint: Optional patient name hint from filename
             dry_run: If True, preview without uploading or recording
+            provider_hint: Optional provider skill key (e.g., "aetna") for extraction routing
 
         Returns:
             Dict with processing results
@@ -207,7 +209,7 @@ class HSAReceiptPipeline:
 
         # Step 1: Extract with multi-claim support
         try:
-            extraction = self.llm.extract_eob(file_path)
+            extraction = self.llm.extract_eob(file_path, provider_hint=provider_hint)
             doc_type = extraction.document_type or "eob"
             logger.info(
                 f"Extracted {len(extraction.claims)} claims from {extraction.payer_name} {doc_type}"
@@ -250,15 +252,18 @@ class HSAReceiptPipeline:
             }
 
         # Step 3: Upload file ONCE to EOBs/{category}/
-        # Use earliest service date for filename
-        earliest_date = min(
-            (c.service_date for c in eligible if c.service_date),
-            default=datetime.now().strftime("%Y-%m-%d"),
-        )
-        year = int(earliest_date[:4])
+        # Use statement date for filename (unique per EOB); fall back to earliest service date
+        if extraction.statement_date:
+            date_for_filename = extraction.statement_date
+        else:
+            date_for_filename = min(
+                (c.service_date for c in eligible if c.service_date),
+                default=datetime.now().strftime("%Y-%m-%d"),
+            )
+        year = int(date_for_filename[:4])
         file_extension = file_path.suffix.lstrip(".")
         doc_label = doc_type.upper()
-        new_filename = f"{earliest_date}_{extraction.payer_name}_{doc_label}.{file_extension}"
+        new_filename = f"{date_for_filename}_{extraction.payer_name}_{doc_label}.{file_extension}"
 
         try:
             folder_id = self.gdrive.get_folder_id_for_eob(
@@ -406,6 +411,7 @@ class HSAReceiptPipeline:
                 api_base=llm_config.get("api_base", default_base),
                 model=llm_config.get("model", "mistral-small3"),
                 vision_model=llm_config.get("vision_model"),
+                eob_model=llm_config.get("eob_model"),
                 max_tokens=llm_config.get("max_tokens", 2048),
                 temperature=llm_config.get("temperature", 0.1),
                 family_members=self.family_names,
@@ -488,7 +494,12 @@ class HSAReceiptPipeline:
         multi_claim_providers = {"aetna", "express_scripts", "sutter"}
         if file_path.suffix.lower() == ".xlsx" or provider_skill in multi_claim_providers:
             logger.info(f"Detected {provider_skill} - using multi-claim extraction")
-            return self.process_eob_file(str(file_path), patient_hint=patient_hint, dry_run=dry_run)
+            return self.process_eob_file(
+                str(file_path),
+                patient_hint=patient_hint,
+                dry_run=dry_run,
+                provider_hint=provider_skill,
+            )
 
         # Step 1: Vision LLM extraction (direct from image/PDF)
         try:

@@ -104,6 +104,7 @@ class MultiClaimExtraction:
     notes: str
     raw_extraction: dict[str, Any]
     claims: list[ExtractedClaim]
+    statement_date: str = ""  # YYYY-MM-DD, used for unique filenames
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -270,28 +271,30 @@ RULES:
     "aetna": """
 OUTPUT FORMAT: Return ONLY a JSON object. No markdown, no explanation, no text before or after.
 
-This is an Aetna EOB with MULTIPLE claims. Extract each claim line as a separate entry.
+This is an Aetna EOB with MULTIPLE claims for MULTIPLE patients. Extract ALL claims from ALL patient sections.
 
 REQUIRED JSON STRUCTURE:
-{"document_type":"eob","payer_name":"Aetna","category":"medical","confidence_score":0.95,"notes":"","claims":[{"service_date":"YYYY-MM-DD","patient_name":"NAME","original_provider":"PROVIDER","service_type":"SERVICE","billed_amount":0.00,"insurance_paid":0.00,"patient_responsibility":0.00,"claim_number":""}]}
+{"document_type":"eob","payer_name":"Aetna","category":"medical","confidence_score":0.95,"claims":[{"service_date":"YYYY-MM-DD","patient_name":"NAME","original_provider":"PROVIDER","service_type":"SERVICE","billed_amount":0.00,"insurance_paid":0.00,"patient_responsibility":0.00,"claim_number":""}]}
 
-PATIENT NAME MAPPING:
-- Map patient names to one of the configured family members
-- Use exact name match when possible
-- "self" or "subscriber" -> first family member (primary account holder)
-- "spouse" or "wife" or "husband" -> second family member if exists
-- "son" or "daughter" or "child" or "dependent" -> remaining family members
+CRITICAL - PATIENT NAME MAPPING:
+- The EOB has sections like "Claim for NAME (self)", "Claim for NAME (spouse)", "Claim for NAME (son)"
+- Map "(self)" or "(subscriber)" -> first family member
+- Map "(spouse)" -> second family member
+- Map "(son)" or "(daughter)" or "(dependent)" -> third family member
+- EVERY claim section has a different patient — do NOT assign all claims to the same person
+- You MUST extract claims from ALL patient sections in the document
 
-FIELD MAPPING:
-- service_date: Look in claim details section for "Date of service" (format as YYYY-MM-DD)
-- original_provider: The doctor/facility name from "Provider" column (NOT Aetna)
-- patient_responsibility: The "Your Share" or "Member Responsibility" amount
-- insurance_paid: The "Plan's Share" or "Plan Paid" amount
-- billed_amount: The "Amount Billed" or "Charged" amount
+FIELD MAPPING (from the claim detail tables, NOT the payment summary):
+- service_date: The date in the "Service type and date" column (format as YYYY-MM-DD)
+- original_provider: The "Provider:" line under each "Claim for..." header
+- patient_responsibility: Column I "Your share C+D+E+H=I" — this is the total the patient owes
+- insurance_paid: Column G "Plan's share"
+- billed_amount: Column A "Amount billed"
+- claim_number: The "Claim ID:" value
 
 RULES:
-- Each row in the payment summary = one claim entry
-- If service_date not visible for a claim, use the statement date
+- Extract from the DETAIL tables (with columns A through I), NOT the payment summary at the top
+- Each claim detail table = one claim entry
 - Return ONLY the JSON object, nothing else
 """,
     "express_scripts": """
@@ -438,6 +441,7 @@ class VisionExtractor:
         api_base: str = "http://localhost:11434/v1",
         model: str = "mistral-small3",
         vision_model: str | None = None,
+        eob_model: str | None = None,
         max_tokens: int = 2048,
         temperature: float = 0.1,
         family_members: list[str] | None = None,
@@ -445,6 +449,7 @@ class VisionExtractor:
         self.api_base = api_base.rstrip("/")
         self.model = model
         self.vision_model = vision_model or model  # Fallback to primary model
+        self.eob_model = eob_model or model  # Larger model for complex EOBs
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.family_members = family_members or ["Alice", "Bob", "Charlie"]
@@ -722,6 +727,277 @@ Analyze the text above to extract the JSON data. The text contains content from 
             claims=claims,
         )
 
+    def _parse_aetna_eob(self, file_path: Path) -> MultiClaimExtraction | None:
+        """Parse Aetna EOB deterministically from pdfplumber text.
+
+        Extracts claims from the payment summary table on pages 1-2, plus
+        claim details (claim IDs, service dates, service types) from the
+        detail sections on subsequent pages.
+        """
+        # Read all pages — claim details span pages 2-7+ for large EOBs
+        text = self._extract_text_with_pdfplumber(file_path, max_pages=20)
+        if not text:
+            return None
+
+        # Strip page markers and repeated page headers so regex can match across pages
+        text = re.sub(r"=== PAGE \d+ ===\n", "", text)
+        text = re.sub(
+            r"Statement date: .+? Page \d+ of \d+\n"
+            r"Member: .+? Member ID: \S+\n"
+            r"Group name: .+? Group #: \S+.*\n",
+            "",
+            text,
+        )
+
+        # --- Extract statement date ---
+        stmt_date_match = re.search(r"Statement date:\s*(\w+ \d{1,2},\s*\d{4})", text)
+        stmt_date = ""
+        if stmt_date_match:
+            try:
+                dt = datetime.strptime(stmt_date_match.group(1), "%B %d, %Y")
+                stmt_date = dt.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
+        # --- Parse payment summary table ---
+        # Extract the block between "Your payment summary" and "Total:"
+        summary_match = re.search(
+            r"Your payment summary\s*\n(.+?)Total:\s*\$",
+            text,
+            re.DOTALL,
+        )
+        if not summary_match:
+            logger.warning("Aetna parser: payment summary section not found")
+            return None
+
+        summary_block = summary_match.group(1)
+        # Skip header lines (Plan's share / Your share / Patient Provider Amount...)
+        header_end = re.search(r"Patient\s+Provider\s+Amount", summary_block)
+        if header_end:
+            summary_block = summary_block[header_end.end() :]
+        # Also skip subheaders like "Sent to Send date Amount"
+        subheader = re.search(r"Sent to\s+Send date\s+Amount\s*\n", summary_block)
+        if subheader:
+            summary_block = summary_block[subheader.end() :]
+
+        # --- Build patient name mapping from claim detail headers ---
+        # "Claim for Ming Hsun (self)" → {"Ming Hsun": "self"}
+        # This lets us identify patient names in the payment summary
+        name_role_map: dict[str, str] = {}
+        for m in re.finditer(r"Claim for (.+?)\s*\((self|spouse|son|daughter|dependent)\)", text):
+            name_role_map[m.group(1).strip()] = m.group(2).lower()
+        # Sort by length descending so longer names match first
+        known_names = sorted(name_role_map.keys(), key=len, reverse=True)
+
+        # --- Parse payment summary lines ---
+        role_pattern = re.compile(r"\((self|spouse|son|daughter|dependent)\)")
+        dollar_pattern = re.compile(r"\$([\d,]+\.\d{2})")
+
+        raw_lines = summary_block.strip().split("\n")
+        # Pre-process: merge bare role markers like "(spouse)" into previous line
+        merged_lines: list[str] = []
+        for line in raw_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("Continued") or stripped.startswith("Page "):
+                continue
+            if "Patient" in stripped and "Provider" in stripped:
+                continue
+            if "Sent to" in stripped and "Send date" in stripped:
+                continue
+            if "Plan's share" in stripped and "Your share" in stripped:
+                continue
+            # Bare role marker (no dollar amounts) — splice into previous line
+            bare_role = role_pattern.match(stripped)
+            if bare_role and not dollar_pattern.search(stripped):
+                if merged_lines:
+                    merged_lines[-1] += " " + stripped
+                continue
+            # Line with dollar amounts — either a new claim or continuation
+            if dollar_pattern.search(stripped):
+                # Check if it starts with a known patient name or has a role marker
+                has_role = role_pattern.search(stripped)
+                starts_with_patient = any(stripped.startswith(n) for n in known_names)
+                if has_role or starts_with_patient:
+                    merged_lines.append(stripped)
+                elif merged_lines:
+                    # Continuation (e.g., "Inc." after "iRhythm Technologies,")
+                    merged_lines[-1] += " " + stripped
+            elif merged_lines:
+                # Non-dollar continuation line (e.g., "Inc.")
+                merged_lines[-1] += " " + stripped
+
+        # Parse each merged line
+        summary_claims = []
+        for line in merged_lines:
+            # Determine patient and role
+            role = None
+            patient_name_end = 0  # End of patient name text (before provider)
+
+            # Try inline role marker first (role appears before any $)
+            first_dollar_pos = line.find("$")
+            if first_dollar_pos < 0:
+                continue
+            pre_dollar = line[:first_dollar_pos]
+            role_match = role_pattern.search(pre_dollar)
+            if role_match:
+                role = role_match.group(1).lower()
+                patient_name_end = role_match.end()
+            else:
+                # Role marker might be at end (bare merge) — check whole line
+                role_match_end = role_pattern.search(line[first_dollar_pos:])
+                if role_match_end:
+                    role = role_match_end.group(1).lower()
+                # Find patient name using known names from claim headers
+                for name in known_names:
+                    if pre_dollar.strip().startswith(name):
+                        if role is None:
+                            role = name_role_map[name]
+                        patient_name_end = pre_dollar.index(name) + len(name)
+                        break
+
+            if role is None:
+                continue
+
+            patient = self._map_patient_name(f"({role})")
+
+            # Provider is between patient name and first $
+            provider = line[patient_name_end:first_dollar_pos].strip().rstrip(",.")
+
+            # Extract all dollar amounts
+            amounts = [float(m.group(1).replace(",", "")) for m in dollar_pattern.finditer(line)]
+            if len(amounts) >= 2:
+                plan_share = amounts[0]
+                your_share = amounts[-1]
+            elif len(amounts) == 1:
+                plan_share = 0.0
+                your_share = amounts[0]
+            else:
+                continue
+
+            summary_claims.append(
+                {
+                    "patient_name": patient,
+                    "original_provider": provider,
+                    "insurance_paid": plan_share,
+                    "patient_responsibility": your_share,
+                }
+            )
+
+        if not summary_claims:
+            logger.warning("Aetna parser: no claims found in payment summary")
+            return None
+
+        # --- Parse claim detail sections for dates, claim IDs, service types ---
+        # Captures: patient role, provider, claim ID, and service block
+        detail_pattern = re.compile(
+            r"Claim for .+?\((self|spouse|son|daughter|dependent)\)\s*\n"
+            r"Provider:\s*(.+?)\s*\(.*?\)\s*\n"
+            r"Claim ID:\s*(\S+).*?"
+            r"Service type and date\s*\n"
+            r"A\s+B\s+C.*?\n"
+            r"(.+?)(?=Claim for |Your Claim Remarks|Continued on next page|\Z)",
+            re.DOTALL,
+        )
+
+        # Build lookup keyed by (patient, provider) to handle same provider for different patients
+        # e.g., Matthew Lewis treats both Ming and Vanessa
+        detail_lookup: dict[str, list[dict]] = {}
+        for dm in detail_pattern.finditer(text):
+            role = dm.group(1).lower()
+            patient = self._map_patient_name(f"({role})")
+            provider = dm.group(2).strip()
+            claim_id = dm.group(3).strip()
+            service_block = dm.group(4)
+
+            # Extract service date: try "on\nM/D/YY", then bare "M/D/YY" on its own line
+            date_match = re.search(r"on\s*\n\s*(\d{1,2}/\d{1,2}/\d{2,4})", service_block)
+            if not date_match:
+                # Bare date on its own line (no preceding "on")
+                date_match = re.search(
+                    r"^\s*(\d{1,2}/\d{1,2}/\d{2,4})\s*$", service_block, re.MULTILINE
+                )
+            svc_date = ""
+            if date_match:
+                raw_date = date_match.group(1)
+                for fmt in ("%m/%d/%y", "%m/%d/%Y"):
+                    try:
+                        dt = datetime.strptime(raw_date, fmt)
+                        svc_date = dt.strftime("%Y-%m-%d")
+                        break
+                    except ValueError:
+                        continue
+
+            # Extract service type (first line of service block, before amounts)
+            svc_line = service_block.strip().split("\n")[0].strip()
+            # Strip everything from first dollar amount or "on" + date
+            svc_type = re.sub(r"\s+on\b.*$", "", svc_line).strip()
+            svc_type = re.sub(r"\s+\d[\d,]*\.\d{2}\b.*$", "", svc_type).strip()
+
+            # Extract billed amount from totals line (line starting with a dollar amount)
+            billed_match = re.search(r"^(\d[\d,]*\.\d{2})\s+", service_block, re.MULTILINE)
+            billed = float(billed_match.group(1).replace(",", "")) if billed_match else 0.0
+
+            key = f"{patient}|{provider}"
+            detail_lookup.setdefault(key, []).append(
+                {
+                    "claim_number": claim_id,
+                    "service_date": svc_date,
+                    "service_type": svc_type,
+                    "billed_amount": billed,
+                    "provider_full": provider,
+                }
+            )
+
+        # --- Merge summary claims with detail info ---
+        def _find_detail_key(patient: str, provider: str) -> str:
+            """Find detail lookup key, with prefix fallback for truncated names."""
+            exact = f"{patient}|{provider}"
+            if exact in detail_lookup:
+                return exact
+            # Prefix match: "iRhythm Technologies" matches "iRhythm Technologies, Inc."
+            for k in detail_lookup:
+                if k.startswith(f"{patient}|") and k.split("|", 1)[1].startswith(provider):
+                    return k
+            return exact
+
+        detail_use_count: dict[str, int] = {}
+        claims = []
+        for sc in summary_claims:
+            patient = sc["patient_name"]
+            provider = sc["original_provider"]
+            key = _find_detail_key(patient, provider)
+            idx = detail_use_count.get(key, 0)
+            detail_use_count[key] = idx + 1
+
+            # Look up detail by (patient, provider) — use idx-th entry for repeated providers
+            details_list = detail_lookup.get(key, [])
+            detail = details_list[idx] if idx < len(details_list) else {}
+
+            claims.append(
+                ExtractedClaim(
+                    service_date=detail.get("service_date", stmt_date),
+                    patient_name=sc["patient_name"],
+                    original_provider=detail.get("provider_full") or provider,
+                    service_type=detail.get("service_type", "Medical Service"),
+                    billed_amount=detail.get("billed_amount", 0.0),
+                    insurance_paid=sc["insurance_paid"],
+                    patient_responsibility=sc["patient_responsibility"],
+                    claim_number=detail.get("claim_number"),
+                )
+            )
+
+        logger.info(f"Aetna parser: extracted {len(claims)} claims deterministically")
+        return MultiClaimExtraction(
+            document_type="eob",
+            payer_name="Aetna",
+            category="medical",
+            confidence_score=0.95,
+            notes="",
+            raw_extraction={"source": "aetna_parser", "file": str(file_path)},
+            claims=claims,
+            statement_date=stmt_date,
+        )
+
     def extract_eob(
         self, file_path: str | Path, provider_hint: str | None = None
     ) -> MultiClaimExtraction:
@@ -752,6 +1028,13 @@ Analyze the text above to extract the JSON data. The text contains content from 
                 logger.info("Detected xlsx file - using direct spreadsheet parsing")
                 return self._extract_xlsx_claims(file_path)
 
+            # Aetna EOBs: use deterministic parser (no LLM needed)
+            if self._current_provider_skill == "aetna" and suffix == ".pdf":
+                result = self._parse_aetna_eob(file_path)
+                if result and result.claims:
+                    return result
+                logger.warning("Aetna parser returned no claims, falling back to LLM")
+
             # Extract text from PDF - prefer text-based extraction
             text_content = ""
             if suffix == ".pdf":
@@ -773,13 +1056,16 @@ DOCUMENT TEXT:
 
 Output JSON only, starting with {{ and ending with }}:"""
 
+                eob_model = self.eob_model
+                if eob_model != self.model:
+                    logger.info(f"Using EOB model: {eob_model}")
                 response = client.chat.completions.create(
-                    model=self.model,
+                    model=eob_model,
                     messages=[
                         {"role": "system", "content": JSON_EXTRACTOR_SYSTEM_PROMPT},
                         {"role": "user", "content": user_prompt},
                     ],
-                    max_tokens=4096,
+                    max_tokens=8192,
                     temperature=self.temperature,
                 )
             else:
@@ -904,7 +1190,21 @@ Output JSON only, starting with {{ and ending with }}:"""
                         }
                     )
 
+        # LLM responses use varying field names; normalize to canonical names
+        _field_aliases = {
+            "patient": "patient_name",
+            "provider": "original_provider",
+            "your_share": "patient_responsibility",
+            "plan_amount": "insurance_paid",
+            "member_amount": "billed_amount",
+            "claim_id": "claim_number",
+        }
+
         for raw_claim in raw_claims:
+            for alias, canonical in _field_aliases.items():
+                if alias in raw_claim and canonical not in raw_claim:
+                    raw_claim[canonical] = raw_claim[alias]
+
             # Ensure patient name is mapped
             patient = raw_claim.get("patient_name") or "Unknown"
             if patient not in self.family_members:
@@ -930,6 +1230,11 @@ Output JSON only, starting with {{ and ending with }}:"""
             if "aetna" in insurer.lower() or self._current_provider_skill == "aetna":
                 payer_name = "Aetna"
 
+        # Extract statement_date from LLM response (used for unique filenames)
+        stmt_date = parsed.get("statement_info", {}).get("statement_date", "")
+        if stmt_date == "Not specified":
+            stmt_date = ""
+
         return MultiClaimExtraction(
             document_type=parsed.get("document_type") or "eob",
             payer_name=payer_name,
@@ -938,6 +1243,7 @@ Output JSON only, starting with {{ and ending with }}:"""
             notes=parsed.get("notes") or "",
             raw_extraction=parsed,
             claims=claims,
+            statement_date=stmt_date,
         )
 
     def _map_patient_name(self, raw_name: str) -> str:

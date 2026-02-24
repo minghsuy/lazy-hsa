@@ -103,7 +103,7 @@ Provider-specific extraction prompts activate automatically based on filename/co
 | **Amazon** | "amazon" | Extracts Grand Total directly (includes tax) |
 | **Express Scripts** | "express scripts", "esrx" | Mail-order pharmacy, **multi-claim extraction**, medication name extraction |
 | **Sutter** | "sutter", "pamf" | Hospital/clinic bills, **multi-claim extraction**, guarantor vs patient distinction |
-| **Aetna** | "aetna" (filename or content) | Medical EOB, **multi-claim extraction**, text-only via pdfplumber |
+| **Aetna** | "aetna" (filename or content) | Medical EOB, **multi-claim extraction**, deterministic regex parser on pdfplumber text (no LLM), falls back to LLM on parse failure |
 | **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" | Vision EOB format |
 | **Stanford** | "stanford" (content) | Hospital statements, Patient Responsibility field |
