@@ -160,7 +160,7 @@ Built-in extraction rules for common providers:
 | **Express Scripts** | "express scripts" | Mail-order pharmacy |
 | **Sutter/PAMF** | "sutter" or "pamf" | Patient Responsibility field |
 | **Stanford** | "stanford" in content | Hospital statements |
-| **Aetna** | "aetna" in content | Multi-claim EOB extraction |
+| **Aetna** | "aetna" in content | Deterministic multi-claim EOB parser (no LLM needed) |
 | **Delta Dental** | "delta dental" | Dental EOB format |
 | **VSP** | "vsp" | Vision EOB format |
 
