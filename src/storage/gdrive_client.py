@@ -153,9 +153,9 @@ class GDriveClient:
 
         from googleapiclient.http import MediaFileUpload
 
-        # Simple upload (works for files < 5MB, use resumable for larger)
+        # Simple upload (works for files < 10MB, use resumable for larger)
         file_size = local_path.stat().st_size
-        if file_size > 5 * 1024 * 1024:  # > 5MB
+        if file_size > 10 * 1024 * 1024:  # > 10MB
             media = MediaFileUpload(
                 str(local_path),
                 mimetype=mime_type,
