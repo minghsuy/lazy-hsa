@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Drive upload failure for 5-10MB files**: `httplib2` resumable upload path fails with "missing Location header". Bumped simple upload threshold from 5MB to 10MB.
+
 ## [1.3.0] - 2026-02-23
 
 ### Added
