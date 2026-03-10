@@ -162,6 +162,12 @@ HEALTHCARE EOBs (Sutter, Kaiser, Delta Dental, VSP, Anthem, Blue Cross):
 - insurance_paid = what the plan/insurance paid
 - category based on provider type (medical/dental/vision)
 
+PAID INVOICES / STATEMENTS (doctor offices, clinics, optometrists):
+- If "Amount Due" or "Balance Due" is $0 but "Paid" or "Payment" shows a dollar amount, the patient already paid
+- patient_responsibility = the total amount PAID by the patient (not the remaining balance)
+- insurance_paid = 0 unless insurance payment is explicitly listed
+- document_type = "statement"
+
 General Rules:
 - patient_name MUST be exactly one of: {family_members}
 - Match the patient/recipient in the document to the closest family member name
@@ -344,6 +350,7 @@ STANFORD HEALTH CARE-SPECIFIC RULES:
 - IMPORTANT: Look through ALL text for the key fields - they may be on different pages
 - Look for "Patient Responsibility" for the amount the patient owes
 - Look for "Balance Due" or "Amount Due" as confirmation
+- If "Balance Due" or "Amount Due" is $0 but a payment is recorded, use the total amount paid
 - Look for "Patient Deductible" - this often equals Patient Responsibility for HDHP plans
 - "Service Date" is the date of medical service (not statement date)
 - "Visit Type" describes the service (e.g., Outpatient, Inpatient)
