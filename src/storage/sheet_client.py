@@ -188,7 +188,7 @@ class GSheetsClient:
             record.reimbursement_date or "",
             record.reimbursement_amount or 0,
             f"{record.confidence:.0%}",
-            record.notes,
+            "; ".join(record.notes) if isinstance(record.notes, list) else record.notes,
             # New fields for EOB linking
             record.original_provider or "",
             record.linked_record_id if record.linked_record_id is not None else "",

@@ -1249,7 +1249,9 @@ Output JSON only, starting with {{ and ending with }}:"""
             payer_name=payer_name,
             category=parsed.get("category") or "medical",
             confidence_score=float(parsed.get("confidence_score") or 0.8),
-            notes=parsed.get("notes") or "",
+            notes="; ".join(parsed["notes"])
+            if isinstance(parsed.get("notes"), list)
+            else (parsed.get("notes") or ""),
             raw_extraction=parsed,
             claims=claims,
             statement_date=stmt_date,
@@ -1520,7 +1522,8 @@ Output JSON only, starting with {{ and ending with }}:"""
             billed_amount = float(parsed.get("billed_amount") or eligible_subtotal)
 
         # Build notes with tax calculation if applicable
-        notes = parsed.get("notes") or ""
+        raw_notes = parsed.get("notes")
+        notes = "; ".join(raw_notes) if isinstance(raw_notes, list) else (raw_notes or "")
         if tax_on_eligible > 0:
             tax_note = (
                 f"Tax rate {tax_rate * 100:.3f}%, tax on eligible items: ${tax_on_eligible:.2f}"

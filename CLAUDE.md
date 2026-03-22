@@ -20,7 +20,7 @@ Default fallback (if not configured): `["Alice", "Bob", "Charlie"]`
 ## Architecture
 
 ### Vision LLM Extraction
-- Uses local Ollama/vLLM with vision models (Mistral Small 3, LLaVA, etc.)
+- Uses local Ollama/vLLM with vision models (Ministral 3 14B for vision, gpt-oss:20b for text)
 - Default endpoint: `http://localhost:11434/v1`
 - Direct image-to-JSON extraction (no separate OCR step)
 - Prompt constrains patient_name to configured family members
@@ -106,7 +106,7 @@ Provider-specific extraction prompts activate automatically based on filename/co
 | **Aetna** | "aetna" (filename or content) | Medical EOB, **multi-claim extraction**, deterministic regex parser on pdfplumber text (no LLM), falls back to LLM on parse failure |
 | **Delta Dental** | "delta dental" | Dental EOB, Patient Pays field |
 | **VSP** | "vsp" | Vision EOB format |
-| **Stanford** | "stanford" (content) | Hospital statements, Patient Responsibility field |
+| **Stanford** | "stanford" (content) | Hospital statements, Patient Responsibility field, paid-invoice handling |
 
 ### Tax Calculation (Retail Receipts)
 For retail receipts (Costco, CVS, etc.), the system:
@@ -167,4 +167,4 @@ uv run python src/processors/llm_extractor.py test_receipts/receipt.pdf
 
 ## Backlog
 
-No outstanding items — all reconciliation features shipped.
+No outstanding items.

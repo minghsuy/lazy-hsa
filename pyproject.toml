@@ -1,6 +1,6 @@
 [project]
 name = "lazy-hsa"
-version = "1.3.0"
+version = "1.4.0"
 description = "Privacy-first, local AI-powered HSA receipt organization system"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,9 +27,9 @@ dependencies = [
     "imapclient>=3.0.0",
     "email-validator>=2.2.0",
     # Image/PDF handling
-    "Pillow>=11.0.0",
+    "Pillow>=12.1.1",
     "pdf2image>=1.17.0",
-    "pypdf>=6.6.0",  # Security: fix malformed PDF DoS
+    "pypdf>=6.9.1",  # Security: fix malformed PDF DoS
     # Web scraping for portals (future)
     "playwright>=1.49.0",
     "beautifulsoup4>=4.12.0",
@@ -47,7 +47,8 @@ dependencies = [
     "pdfplumber>=0.11.9",
     # Security: explicit version constraints for transitive dependencies
     "urllib3>=2.6.3",  # Fix decompression bomb bypass
-    "pyasn1>=0.6.2",   # Fix DoS in decoder
+    "pyasn1>=0.6.3",   # Fix DoS in decoder
+    "protobuf>=6.33.6",  # Fix JSON recursion depth bypass
 ]
 
 [project.optional-dependencies]

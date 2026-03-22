@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-03-22
+
+### Added
+- **Reimbursement view** (`lazy-hsa reconcile`): per-visit reconciliation tab matching EOBs to statements
+  - Three-tier matching: exact → fuzzy amount → fuzzy date
+  - Overbilling detection with provider call-to-action
+  - Pushes Reimbursement worksheet to Google Sheets with summary totals
+  - Shared `visit_amount()` utility for consistent amount calculation
+
 ### Fixed
-- **Drive upload failure for 5-10MB files**: `httplib2` resumable upload path fails with "missing Location header". Bumped simple upload threshold from 5MB to 10MB.
+- **Drive upload failure for 5-10MB files**: `httplib2` resumable upload path fails with "missing Location header". Bumped simple upload threshold from 5MB to 10MB
+- **Paid invoice prompt**: prefer payment amount over total charges for paid statements
+- **Notes-as-list bug**: LLM returning notes as list no longer causes Sheets API 400 error
+- **Reimbursement view bugs** (from code review):
+  - `is_paid` no longer incorrectly marks statements as paid (only receipts)
+  - Removed dead `Your Cost` key not written to sheet
+  - `None` record ID guards prevent silent matching collisions
+  - Zero co-pay visits no longer fall through to statement amount
+  - Tier 3 category guard rejects match when one side has no category
+  - Column range derived from headers instead of hardcoded
+
+### Security
+- Bump pillow 12.1.0 → 12.1.1 (out-of-bounds write on PSD images)
+- Bump pypdf 6.6.2 → 6.9.1 (multiple malformed PDF DoS vectors)
+- Bump pyasn1 0.6.2 → 0.6.3 (unbounded recursion DoS)
+- Bump protobuf 6.33.2 → 6.33.6 (JSON recursion depth bypass)
 
 ## [1.3.0] - 2026-02-23
 
