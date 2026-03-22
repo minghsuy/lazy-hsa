@@ -28,6 +28,7 @@ from storage.sheet_client import (
     ReceiptRecord,
     _safe_float,
     create_record_from_extraction,
+    visit_amount,
 )
 
 # Configure logging
@@ -1027,6 +1028,59 @@ try:
         else:
             console.print("\n[bold green]All reconciled[/bold green]")
 
+        # Reimbursement view
+        visits = pipeline.sheets.reconcile_for_reimbursement(year)
+        claimable = [v for v in visits if v.get("Ready to Claim?") == "Yes"]
+        pending = [v for v in visits if v.get("Ready to Claim?") == "No"]
+        overbilled = [v for v in visits if v.get("Overbilled?")]
+
+        total_claimable = sum(visit_amount(v) for v in claimable)
+        total_pending = sum(visit_amount(v) for v in pending)
+
+        console.print(f"\n[bold]Reimbursement View ({len(visits)} visits)[/bold]")
+        reimb_table = Table()
+        reimb_table.add_column("Date")
+        reimb_table.add_column("Patient")
+        reimb_table.add_column("Provider")
+        reimb_table.add_column("Category")
+        reimb_table.add_column("EOB Amt", justify="right")
+        reimb_table.add_column("Stmt Amt", justify="right")
+        reimb_table.add_column("Overbilled")
+        reimb_table.add_column("Ready")
+        reimb_table.add_column("Gap")
+        for v in visits:
+            ready = v.get("Ready to Claim?", "")
+            ready_style = "green" if ready == "Yes" else "red" if ready == "No" else "dim"
+            overbill = v.get("Overbilled?", "")
+            overbill_style = f"[bold red]{overbill}[/bold red]" if overbill else ""
+            eob_amt = f"${v['EOB Amount']:,.2f}" if v.get("EOB Amount") != "" else ""
+            stmt_amt = f"${v['Statement Amount']:,.2f}" if v.get("Statement Amount") != "" else ""
+            reimb_table.add_row(
+                v.get("Service Date", ""),
+                v.get("Patient", ""),
+                v.get("Provider", ""),
+                v.get("Category", ""),
+                eob_amt,
+                stmt_amt,
+                overbill_style,
+                f"[{ready_style}]{ready}[/{ready_style}]",
+                v.get("Gap", ""),
+            )
+        console.print(reimb_table)
+        console.print(
+            f"\n  Ready to claim: [green]${total_claimable:,.2f}[/green]"
+            f"  |  Pending: [yellow]${total_pending:,.2f}[/yellow]"
+        )
+        if overbilled:
+            total_over = sum(
+                _safe_float(v.get("Statement Amount")) - _safe_float(v.get("EOB Amount"))
+                for v in overbilled
+            )
+            console.print(
+                f"  [bold red]OVERBILLED: {len(overbilled)} visits, "
+                f"${total_over:,.2f} overcharged — call providers![/bold red]"
+            )
+
         # Push to Google Sheets
         if push:
             try:
@@ -1042,9 +1096,15 @@ try:
                     },
                     variance_count=len(variances),
                 )
-                console.print(f"\n[green]Pushed to Google Sheets:[/green] {url}")
+                console.print(f"\n[green]Pushed reconciliation summary:[/green] {url}")
             except Exception as e:
-                console.print(f"\n[red]Failed to push to Sheets: {e}[/red]")
+                console.print(f"\n[red]Failed to push reconciliation summary: {e}[/red]")
+
+            try:
+                url = pipeline.sheets.push_reimbursement_view(visits)
+                console.print(f"[green]Pushed reimbursement view:[/green] {url}")
+            except Exception as e:
+                console.print(f"\n[red]Failed to push reimbursement view: {e}[/red]")
 
     @cli.command("email-scan")
     @click.option("--since", help="Scan emails since date (YYYY-MM-DD)")

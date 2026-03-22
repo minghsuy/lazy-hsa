@@ -21,6 +21,12 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def visit_amount(v: dict) -> float:
+    """Get the best available amount for a visit (EOB preferred, then statement)."""
+    eob = v.get("EOB Amount")
+    return _safe_float(eob if eob != "" else v.get("Statement Amount"))
+
+
 @dataclass
 class ReceiptRecord:
     id: int
@@ -803,6 +809,364 @@ class GSheetsClient:
         ws.update("A1", rows, value_input_option="USER_ENTERED")
 
         return self._spreadsheet.url
+
+    # ── Reimbursement View ──────────────────────────────────────────────
+
+    REIMBURSEMENT_HEADERS = [
+        "Service Date",
+        "Patient",
+        "Provider",
+        "Category",
+        "EOB Amount",
+        "Statement Amount",
+        "Overbilled?",
+        "EOB?",
+        "Statement?",
+        "Paid?",
+        "Ready to Claim?",
+        "Claimed?",
+        "Gap",
+        "EOB Record ID",
+        "Statement Record ID",
+        "Match Tier",
+    ]
+
+    def reconcile_for_reimbursement(
+        self, year: int, amount_tolerance: float = 5.0, date_tolerance_days: int = 7
+    ) -> list[dict]:
+        """Build a per-visit reconciliation by matching EOBs to statements.
+
+        Matching tiers (provider name is NOT used — too unreliable):
+          Tier 1: exact (patient, service_date, amount)
+          Tier 2: (patient, service_date) with amount ±tolerance
+          Tier 3: (patient, amount) with date ±date_tolerance_days
+
+        Returns list of visit dicts ready for the Reimbursement tab.
+        """
+        records = self.get_all_records()
+
+        eobs: list[dict] = []
+        statements: list[dict] = []
+
+        for r in records:
+            if not self._matches_year(r, year):
+                continue
+            if not self._is_countable_record(r):
+                continue
+            doc_type = r.get("Document Type", "")
+            if doc_type == "eob":
+                eobs.append(r)
+            elif doc_type in ("statement", "receipt", "prescription", "claim"):
+                statements.append(r)
+
+        def _parse_date(s: str):
+            try:
+                return datetime.strptime(s, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                return None
+
+        # Track which records have been matched
+        matched_eob_ids: set[int] = set()
+        matched_stmt_ids: set[int] = set()
+        visits: list[dict] = []
+
+        def _rid(r):
+            return self._parse_record_id(r.get("ID", 0))
+
+        # Tier 1: exact (patient, date, amount)
+        stmt_by_key: dict[tuple, list[dict]] = {}
+        for s in statements:
+            key = (
+                s.get("Patient", ""),
+                s.get("Service Date", ""),
+                round(_safe_float(s.get("Patient Responsibility")), 2),
+            )
+            stmt_by_key.setdefault(key, []).append(s)
+
+        for e in eobs:
+            eid = _rid(e)
+            if eid is None or eid in matched_eob_ids:
+                continue
+            key = (
+                e.get("Patient", ""),
+                e.get("Service Date", ""),
+                round(_safe_float(e.get("Patient Responsibility")), 2),
+            )
+            candidates = stmt_by_key.get(key, [])
+            for s in candidates:
+                sid = _rid(s)
+                if sid is None or sid in matched_stmt_ids:
+                    continue
+                visits.append(self._build_visit(e, s, "Tier 1"))
+                matched_eob_ids.add(eid)
+                matched_stmt_ids.add(sid)
+                break
+
+        # Tier 2: (patient, date) with amount ±tolerance
+        for e in eobs:
+            eid = _rid(e)
+            if eid is None or eid in matched_eob_ids:
+                continue
+            e_amt = _safe_float(e.get("Patient Responsibility"))
+            for s in statements:
+                sid = _rid(s)
+                if sid is None or sid in matched_stmt_ids:
+                    continue
+                if e.get("Patient", "") != s.get("Patient", ""):
+                    continue
+                if e.get("Service Date", "") != s.get("Service Date", ""):
+                    continue
+                s_amt = _safe_float(s.get("Patient Responsibility"))
+                if abs(e_amt - s_amt) <= amount_tolerance:
+                    visits.append(self._build_visit(e, s, "Tier 2"))
+                    matched_eob_ids.add(eid)
+                    matched_stmt_ids.add(sid)
+                    break
+
+        # Tier 3: (patient, amount) with date ±date_tolerance_days
+        # Only match within same category to avoid false positives
+        for e in eobs:
+            eid = _rid(e)
+            if eid is None or eid in matched_eob_ids:
+                continue
+            e_amt = _safe_float(e.get("Patient Responsibility"))
+            e_date = _parse_date(e.get("Service Date", ""))
+            e_cat = e.get("Category", "").lower()
+            if not e_date:
+                continue
+            for s in statements:
+                sid = _rid(s)
+                if sid is None or sid in matched_stmt_ids:
+                    continue
+                if e.get("Patient", "") != s.get("Patient", ""):
+                    continue
+                # Require same category for Tier 3 (looser match needs tighter filter)
+                s_cat = s.get("Category", "").lower()
+                if (e_cat or s_cat) and e_cat != s_cat:
+                    continue
+                s_amt = _safe_float(s.get("Patient Responsibility"))
+                if abs(e_amt - s_amt) > amount_tolerance:
+                    continue
+                s_date = _parse_date(s.get("Service Date", ""))
+                if not s_date:
+                    continue
+                if abs((e_date - s_date).days) <= date_tolerance_days:
+                    visits.append(self._build_visit(e, s, "Tier 3"))
+                    matched_eob_ids.add(eid)
+                    matched_stmt_ids.add(sid)
+                    break
+
+        # Unmatched EOBs (have EOB but no statement)
+        for e in eobs:
+            eid = _rid(e)
+            if eid is None or eid in matched_eob_ids:
+                continue
+            provider = e.get("Original Provider") or e.get("Provider", "")
+            amt = _safe_float(e.get("Patient Responsibility"))
+            visits.append(
+                {
+                    "Service Date": e.get("Service Date", ""),
+                    "Patient": e.get("Patient", ""),
+                    "Provider": provider,
+                    "Category": e.get("Category", ""),
+                    "EOB Amount": amt,
+                    "Statement Amount": "",
+                    "Overbilled?": "",
+                    "EOB?": "Yes",
+                    "Statement?": "No",
+                    "Paid?": "",
+                    "Ready to Claim?": "Yes" if amt > 0 else "N/A",
+                    "Claimed?": "",
+                    "Gap": "",
+                    "EOB Record ID": _rid(e),
+                    "Statement Record ID": "",
+                    "Match Tier": "",
+                }
+            )
+
+        # Unmatched statements (have statement but no EOB)
+        for s in statements:
+            sid = _rid(s)
+            if sid is None or sid in matched_stmt_ids:
+                continue
+            amt = _safe_float(s.get("Patient Responsibility"))
+            category = s.get("Category", "")
+            # Dental/vision/pharmacy may not have EOBs from medical insurer
+            needs_eob = category not in ("dental", "vision", "pharmacy")
+            visits.append(
+                {
+                    "Service Date": s.get("Service Date", ""),
+                    "Patient": s.get("Patient", ""),
+                    "Provider": s.get("Provider", ""),
+                    "Category": category,
+                    "EOB Amount": "",
+                    "Statement Amount": amt,
+                    "Overbilled?": "",
+                    "EOB?": "No",
+                    "Statement?": "Yes",
+                    "Paid?": "Yes" if s.get("Document Type") == "receipt" else "",
+                    "Ready to Claim?": "Yes" if not needs_eob else "No",
+                    "Claimed?": "",
+                    "Gap": "Missing EOB" if needs_eob else "",
+                    "EOB Record ID": "",
+                    "Statement Record ID": sid,
+                    "Match Tier": "",
+                }
+            )
+
+        # Sort by date
+        visits.sort(key=lambda v: v.get("Service Date", ""))
+        return visits
+
+    def _build_visit(self, eob: dict, stmt: dict, tier: str) -> dict:
+        """Build a visit dict from a matched EOB + statement pair."""
+        provider = eob.get("Original Provider") or eob.get("Provider", "")
+        eob_amt = _safe_float(eob.get("Patient Responsibility"))
+        stmt_amt = _safe_float(stmt.get("Patient Responsibility"))
+        is_paid = stmt.get("Document Type") == "receipt"
+        overbilled = stmt_amt > eob_amt + 0.01  # statement charges more than EOB says
+
+        return {
+            "Service Date": eob.get("Service Date", ""),
+            "Patient": eob.get("Patient", ""),
+            "Provider": provider,
+            "Category": eob.get("Category", "") or stmt.get("Category", ""),
+            "EOB Amount": eob_amt,
+            "Statement Amount": stmt_amt,
+            "Overbilled?": f"YES +${stmt_amt - eob_amt:.2f}" if overbilled else "",
+            "EOB?": "Yes",
+            "Statement?": "Yes",
+            "Paid?": "Yes" if is_paid else "",
+            "Ready to Claim?": "Yes",
+            "Claimed?": "",
+            "Gap": "OVERBILLED — call provider" if overbilled else "",
+            "EOB Record ID": self._parse_record_id(eob.get("ID", 0)),
+            "Statement Record ID": self._parse_record_id(stmt.get("ID", 0)),
+            "Match Tier": tier,
+        }
+
+    def push_reimbursement_view(self, visits: list[dict]) -> str:
+        """Write the reconciled visits to a 'Reimbursement' tab in the spreadsheet.
+
+        Creates or replaces the tab contents. Returns the spreadsheet URL.
+        """
+        # Get or create the spreadsheet (reuse from main worksheet)
+        _ = self._get_worksheet()  # ensures self._spreadsheet is set
+        spreadsheet = self._spreadsheet
+
+        # Get or create Reimbursement worksheet
+        tab_name = "Reimbursement"
+        try:
+            ws = spreadsheet.worksheet(tab_name)
+            ws.clear()
+        except Exception:
+            ws = spreadsheet.add_worksheet(
+                title=tab_name,
+                rows=max(1000, len(visits) + 20),
+                cols=len(self.REIMBURSEMENT_HEADERS),
+            )
+
+        # Write headers
+        ws.update("A1", [self.REIMBURSEMENT_HEADERS])
+
+        if not visits:
+            return spreadsheet.url
+
+        # Write data rows
+        rows = []
+        for v in visits:
+            rows.append(
+                [
+                    v.get("Service Date", ""),
+                    v.get("Patient", ""),
+                    v.get("Provider", ""),
+                    v.get("Category", ""),
+                    v.get("EOB Amount", ""),
+                    v.get("Statement Amount", ""),
+                    v.get("Overbilled?", ""),
+                    v.get("EOB?", ""),
+                    v.get("Statement?", ""),
+                    v.get("Paid?", ""),
+                    v.get("Ready to Claim?", ""),
+                    v.get("Claimed?", ""),
+                    v.get("Gap", ""),
+                    v.get("EOB Record ID", ""),
+                    v.get("Statement Record ID", ""),
+                    v.get("Match Tier", ""),
+                ]
+            )
+
+        last_col = chr(ord("A") + len(self.REIMBURSEMENT_HEADERS) - 1)
+        ws.update(f"A2:{last_col}{len(rows) + 1}", rows)
+
+        # Summary rows
+        total_claimable = sum(visit_amount(v) for v in visits if v.get("Ready to Claim?") == "Yes")
+        total_pending = sum(visit_amount(v) for v in visits if v.get("Ready to Claim?") == "No")
+        total_all = sum(visit_amount(v) for v in visits if v.get("Ready to Claim?") != "N/A")
+        overbilled_visits = [v for v in visits if v.get("Overbilled?")]
+        total_overbilled = sum(
+            _safe_float(v.get("Statement Amount")) - _safe_float(v.get("EOB Amount"))
+            for v in overbilled_visits
+        )
+
+        summary_row = len(rows) + 3  # skip a blank row
+        ws.update(
+            f"A{summary_row}",
+            [
+                ["SUMMARY", "", "", "", f"${total_all:,.2f}"],
+                ["Ready to Claim", "", "", "", f"${total_claimable:,.2f}"],
+                ["Pending (gaps)", "", "", "", f"${total_pending:,.2f}"],
+                [
+                    f"OVERBILLED ({len(overbilled_visits)})"
+                    if overbilled_visits
+                    else "No overbilling detected",
+                    "",
+                    "",
+                    "",
+                    f"${total_overbilled:,.2f}" if overbilled_visits else "",
+                ],
+            ],
+        )
+
+        # Bold headers and overbilling
+        ws.format("A1:P1", {"textFormat": {"bold": True}})
+        ws.format(f"A{summary_row}:A{summary_row + 3}", {"textFormat": {"bold": True}})
+        if overbilled_visits:
+            ws.format(
+                f"A{summary_row + 3}:E{summary_row + 3}",
+                {
+                    "textFormat": {"bold": True},
+                    "backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8},
+                },
+            )
+
+        logger.info(
+            f"Pushed {len(rows)} visits to Reimbursement tab "
+            f"(${total_claimable:,.2f} claimable, ${total_pending:,.2f} pending)"
+        )
+        return spreadsheet.url
+
+    def delete_record(self, record_id: int) -> bool:
+        """Delete a record row by ID.
+
+        Args:
+            record_id: The ID of the record to delete
+
+        Returns:
+            True if deletion succeeded
+        """
+        worksheet = self._get_worksheet()
+        records = worksheet.get_all_records()
+
+        for i, record in enumerate(records):
+            if self._parse_record_id(record.get("ID", 0)) == record_id:
+                # Row index is i + 2 (1-indexed, skip header)
+                worksheet.delete_rows(i + 2)
+                logger.info(f"Deleted record ID {record_id} (row {i + 2})")
+                return True
+
+        logger.warning(f"Record ID {record_id} not found for deletion")
+        return False
 
 
 def create_record_from_extraction(
