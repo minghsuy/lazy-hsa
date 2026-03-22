@@ -164,7 +164,9 @@ HEALTHCARE EOBs (Sutter, Kaiser, Delta Dental, VSP, Anthem, Blue Cross):
 
 PAID INVOICES / STATEMENTS (doctor offices, clinics, optometrists):
 - If "Amount Due" or "Balance Due" is $0 but "Paid" or "Payment" shows a dollar amount, the patient already paid
-- patient_responsibility = the total amount PAID by the patient (not the remaining balance)
+- patient_responsibility = the total amount PAID by the patient (not the total charges, not the remaining balance)
+- If the statement shows a payment (e.g., "Patient Payment: VISA $962.50"), use THAT amount as patient_responsibility — not the total charges or account balance
+- When both total charges and a payment are shown, patient_responsibility = the payment amount
 - insurance_paid = 0 unless insurance payment is explicitly listed
 - document_type = "statement"
 
