@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>lazy-hsa &mdash; AI-Powered HSA Receipt Organizer</title>
+  <meta name="description" content="Local AI-powered HSA receipt organization. Pay medical bills now, invest your HSA, reimburse decades later.">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    :root {
+      --pico-font-size: 100%;
+    }
+    .hero {
+      text-align: center;
+      padding: 2rem 0 1rem;
+    }
+    .hero h1 {
+      margin-bottom: 0.25rem;
+      font-size: 2.5rem;
+    }
+    .hero .tagline {
+      font-size: 1.25rem;
+      color: var(--pico-muted-color);
+      margin-bottom: 2rem;
+    }
+    .install-block {
+      max-width: 400px;
+      margin: 0 auto 2rem;
+    }
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1.5rem;
+      text-align: center;
+      margin: 2rem 0;
+    }
+    .steps article {
+      padding: 1.5rem;
+    }
+    .step-num {
+      display: inline-block;
+      width: 2rem;
+      height: 2rem;
+      line-height: 2rem;
+      border-radius: 50%;
+      background: var(--pico-primary);
+      color: var(--pico-primary-inverse);
+      font-weight: bold;
+      margin-bottom: 0.5rem;
+    }
+    .features li {
+      margin-bottom: 0.75rem;
+    }
+    footer {
+      text-align: center;
+      padding: 2rem 0;
+    }
+    footer .badges a {
+      margin: 0 0.25rem;
+    }
+    footer .badges img {
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+
+    <section class="hero">
+      <h1>lazy-hsa</h1>
+      <p class="tagline">Pay medical bills now. Invest your HSA. Reimburse decades later.</p>
+      <div class="install-block">
+        <pre><code>pip install lazy-hsa</code></pre>
+      </div>
+      <p>
+        A local AI-powered CLI that scans receipts, extracts data with vision models,
+        and tracks everything in Google Sheets &mdash; so you can claim HSA reimbursements
+        years from now when your investments have compounded.
+      </p>
+    </section>
+
+    <hr>
+
+    <section>
+      <h2>How It Works</h2>
+      <div class="steps">
+        <article>
+          <div class="step-num">1</div>
+          <h3>Drop receipts</h3>
+          <p>Upload medical bills, EOBs, or pharmacy receipts to your Google Drive inbox folder.</p>
+        </article>
+        <article>
+          <div class="step-num">2</div>
+          <h3>AI extracts</h3>
+          <p>Local vision models (Ollama) read each document and pull out dates, amounts, and providers.</p>
+        </article>
+        <article>
+          <div class="step-num">3</div>
+          <h3>Sheets tracks</h3>
+          <p>Everything lands in a Google Sheets master index &mdash; organized by year, patient, and category.</p>
+        </article>
+      </div>
+    </section>
+
+    <hr>
+
+    <section>
+      <h2>Key Features</h2>
+      <ul class="features">
+        <li><strong>100% local AI</strong> &mdash; Your medical data never leaves your machine. Uses Ollama with vision models for extraction.</li>
+        <li><strong>Provider-specific skills</strong> &mdash; Custom extraction logic for 10+ providers (Aetna, CVS, Costco, Express Scripts, Sutter, and more).</li>
+        <li><strong>Multi-claim EOBs</strong> &mdash; Handles insurance EOBs with multiple patients, dates, and claim lines in a single document.</li>
+        <li><strong>Reconciliation &amp; overbilling detection</strong> &mdash; Matches EOBs to statements, flags when you were charged more than insurance says you owe.</li>
+        <li><strong>Reimbursement view</strong> &mdash; See exactly which visits are ready to claim, what's pending, and total claimable amount.</li>
+        <li><strong>Gmail scanning</strong> &mdash; Automatically finds medical emails with attachments and processes them.</li>
+      </ul>
+    </section>
+
+    <hr>
+
+    <section>
+      <h2>Quick Start</h2>
+<pre><code># Install
+pip install lazy-hsa
+
+# Set up Google API credentials and local AI
+lazy-hsa setup
+
+# Process files from your Drive inbox
+lazy-hsa inbox
+
+# Or process a single file
+lazy-hsa process --file receipt.pdf
+
+# View reconciliation and reimbursement summary
+lazy-hsa reconcile --year 2025</code></pre>
+      <p>
+        See the <a href="https://github.com/minghsuy/lazy-hsa#quick-start">full setup guide</a>
+        for Google API configuration and Ollama installation.
+      </p>
+    </section>
+
+    <hr>
+
+    <section>
+      <h2>The Strategy</h2>
+      <p>
+        The <a href="https://www.bogleheads.org/wiki/Health_savings_account">Boglehead HSA strategy</a>:
+        pay medical expenses out-of-pocket today, let your HSA investments grow tax-free for decades,
+        then reimburse yourself later. The IRS has no time limit on HSA reimbursements &mdash;
+        you just need to keep your receipts.
+      </p>
+      <p>
+        <strong>lazy-hsa</strong> is the "keep your receipts" part, automated.
+      </p>
+    </section>
+
+  </main>
+
+  <footer class="container">
+    <div class="badges">
+      <a href="https://pypi.org/project/lazy-hsa/"><img src="https://img.shields.io/pypi/v/lazy-hsa" alt="PyPI version"></a>
+      <a href="https://pypi.org/project/lazy-hsa/"><img src="https://img.shields.io/pypi/pyversions/lazy-hsa" alt="Python versions"></a>
+      <a href="https://github.com/minghsuy/lazy-hsa/blob/main/LICENSE"><img src="https://img.shields.io/github/license/minghsuy/lazy-hsa" alt="License"></a>
+    </div>
+    <p>
+      <a href="https://github.com/minghsuy/lazy-hsa">GitHub</a> &middot;
+      <a href="https://pypi.org/project/lazy-hsa/">PyPI</a> &middot;
+      <a href="https://github.com/minghsuy/lazy-hsa/wiki">Wiki</a> &middot;
+      <a href="https://github.com/minghsuy/lazy-hsa/blob/main/CHANGELOG.md">Changelog</a>
+    </p>
+  </footer>
+</body>
+</html>

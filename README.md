@@ -1,5 +1,9 @@
 # lazy-hsa
 
+[![PyPI version](https://img.shields.io/pypi/v/lazy-hsa)](https://pypi.org/project/lazy-hsa/)
+[![Python versions](https://img.shields.io/pypi/pyversions/lazy-hsa)](https://pypi.org/project/lazy-hsa/)
+[![License](https://img.shields.io/github/license/minghsuy/lazy-hsa)](LICENSE)
+
 A privacy-first, local AI-powered HSA receipt organization system. Your medical data never leaves your machine.
 
 ## The Strategy
@@ -31,14 +35,13 @@ This is the [Boglehead HSA strategy](https://www.bogleheads.org/wiki/Health_savi
 ### 1. Install
 
 ```bash
-git clone https://github.com/yourusername/lazy-hsa.git
+# From PyPI
+pip install lazy-hsa
+
+# Or from source (for development)
+git clone https://github.com/minghsuy/lazy-hsa.git
 cd lazy-hsa
-
-# Install with uv (recommended)
 uv sync
-
-# Or with pip
-pip install -e .
 ```
 
 ### 2. Set Up Ollama
