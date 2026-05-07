@@ -18,6 +18,11 @@ jobs:
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
+    # Skip on drafts: review only fires once PR is ready.
+    # Workflow fires on every PR event but the job skips while
+    # the PR is in draft state — only fires for real once the
+    # author marks it ready_for_review.
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -51,19 +56,13 @@ jobs:
         # Stricter check: require that the latest claude[bot] review's
         # timestamp is NEWER than the PR's HEAD commit. If the bot didn't
         # update its comment after the latest push, the check fails loudly.
-        #
-        # Skipped on drafts: the claude-code-action itself may skip on draft
-        # PRs, which would leave LATEST_REVIEW empty and falsely fail this
-        # guard. The `ready_for_review` trigger re-runs the workflow when
-        # the PR leaves draft state, at which point this guard runs.
-        if: ${{ !github.event.pull_request.draft }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          REPO="${{ github.repository }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
           # Brief pause to let any pending comments from the prior step propagate.
           sleep 5
@@ -119,5 +118,8 @@ jobs:
             echo "::error::Latest claude[bot] activity ($LATEST_REVIEW) is older than HEAD commit ($HEAD_AT)."
             echo "::error::Action ran but did not update its review for the latest push."
             echo "::error::Edit-in-place no-op re-run case (issue #37). Failing loudly."
+            echo "::error::To re-trigger the review: push an empty commit (git commit --allow-empty -m 'trigger review' && git push)."
             exit 1
           fi
+
+          echo "Guard passed: latest claude[bot] activity ($LATEST_REVIEW) >= HEAD commit ($HEAD_AT)"
