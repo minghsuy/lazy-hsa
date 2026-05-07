@@ -42,3 +42,34 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
+      - name: Fail loudly if review produced no output
+        # Tracks issue #37: claude-review has historically exited cleanly while
+        # producing zero comments/reviews (auth flake, model unavailable, or
+        # silent skip). A green check that didn't actually review anything
+        # creates false confidence — convert it to a loud failure here.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+
+          # Brief pause to let any pending comments from the prior step propagate.
+          sleep 5
+
+          INLINE=$(gh api "/repos/$REPO/pulls/$PR_NUMBER/comments" \
+            --jq '[.[] | select(.user.login == "claude[bot]" or .user.login == "claude")] | length')
+          CONV=$(gh api "/repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '[.[] | select(.user.login == "claude[bot]" or .user.login == "claude")] | length')
+          REVIEWS=$(gh api "/repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            --jq '[.[] | select(.user.login == "claude[bot]" or .user.login == "claude")] | length')
+          TOTAL=$((INLINE + CONV + REVIEWS))
+
+          echo "claude[bot] output on PR #$PR_NUMBER: $INLINE inline + $CONV conversation + $REVIEWS formal = $TOTAL total"
+
+          if [[ "$TOTAL" -eq 0 ]]; then
+            echo "::error::Claude Code Review action exited cleanly but produced NO output."
+            echo "::error::Likely causes: auth flake, model unavailable, or silent skip (see issue #37)."
+            echo "::error::Failing loudly so the green check doesn't create false confidence."
+            exit 1
+          fi
