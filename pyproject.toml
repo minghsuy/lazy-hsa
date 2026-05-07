@@ -29,11 +29,11 @@ dependencies = [
     # Image/PDF handling
     "Pillow>=12.1.1",
     "pdf2image>=1.17.0",
-    "pypdf>=6.9.1",  # Security: fix malformed PDF DoS
+    "pypdf>=6.10.2",  # Security: fix malformed PDF DoS
     # Web scraping for portals (future)
     "playwright>=1.49.0",
     "beautifulsoup4>=4.12.0",
-    "lxml>=5.3.0",
+    "lxml>=6.1.0",
     # Utilities
     "pyyaml>=6.0",
     "python-dateutil>=2.9.0",
@@ -43,7 +43,7 @@ dependencies = [
     # Data handling
     "pandas>=2.2.0",
     "openpyxl>=3.1.0",
-    "pillow-heif>=1.1.1",
+    "pillow>=12.2.0",
     "pdfplumber>=0.11.9",
     # Security: explicit version constraints for transitive dependencies
     "urllib3>=2.6.3",  # Fix decompression bomb bypass
@@ -54,7 +54,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ruff>=0.8.0",
-    "pytest>=8.0.0",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "pre-commit>=4.0.0",
 ]
