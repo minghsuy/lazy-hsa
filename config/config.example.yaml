@@ -80,13 +80,22 @@ scanner:
 # =============================================================================
 # Family Members (Names used for folder structure and patient matching)
 # =============================================================================
+# Each member can optionally declare `aliases` — alternate names that may
+# appear on receipts or filenames (legal names, nicknames, alternate spellings).
+# The vision LLM is instructed to map aliases to the canonical `name`, and
+# `_map_patient_name` applies the same mapping as a Python safety net. Useful
+# when a receipt prints a legal name different from the preferred name, or
+# when filenames use a nickname (e.g. "amazon_charlie_eyedrops.pdf" with
+# alias "Charlie" -> canonical "Charles").
 family:
   - name: "Alice"
     role: "primary"      # HSA account holder
   - name: "Bob"
     role: "spouse"
+    aliases: ["Robert", "Bobby"]   # optional alternate names
   - name: "Charlie"
     role: "dependent"    # Children, etc.
+    aliases: ["Charlie Jr.", "C.J."]   # optional
 
 # =============================================================================
 # Provider Search Patterns (for email filtering)

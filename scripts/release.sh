@@ -67,6 +67,23 @@ fi
 echo "==> running verify"
 run "$REPO_DIR/scripts/verify.sh"
 
+# --- Sync wiki repo (read-only pre-flight) ---
+# wiki-repo/ is a SEPARATE git repo tracking lazy-hsa.wiki.git. We don't
+# auto-write to it (page content is curated per release), but we do want to
+# fail fast if its working tree is dirty — otherwise the user has un-published
+# wiki edits hanging around at release time.
+echo "==> checking wiki"
+if [[ -d "$REPO_DIR/wiki-repo" ]]; then
+  if [[ -n "$(git -C "$REPO_DIR/wiki-repo" status --porcelain 2>/dev/null)" ]]; then
+    echo "error: wiki-repo has uncommitted changes — commit or stash before release" >&2
+    git -C "$REPO_DIR/wiki-repo" status --short
+    exit 1
+  fi
+  run git -C "$REPO_DIR/wiki-repo" pull --ff-only
+else
+  echo "warn: wiki-repo not present at $REPO_DIR/wiki-repo — skipping wiki sync"
+fi
+
 # --- Bump version ---
 echo "==> bumping version to $NEW_VERSION"
 if (( DRY_RUN )); then
@@ -81,6 +98,37 @@ p.write_text(t)
 "
   run git add pyproject.toml
   run git commit -m "Release v${NEW_VERSION}"
+fi
+
+# --- Bump CHANGELOG.md ---
+# Move the [Unreleased] section to a versioned heading and reinsert an empty
+# [Unreleased] for the next cycle. Amend into the version-bump commit so we
+# get one "Release vX.Y.Z" commit, not two. If [Unreleased] is missing (e.g.
+# user already bumped manually), warn and skip rather than fail.
+echo "==> bumping CHANGELOG"
+TODAY=$(date -u +%Y-%m-%d)
+if [[ ! -f CHANGELOG.md ]]; then
+  echo "warn: CHANGELOG.md not present — skipping bump"
+elif ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+  echo "warn: no [Unreleased] section in CHANGELOG.md — skipping bump"
+elif (( DRY_RUN )); then
+  echo "+ would bump CHANGELOG.md: [Unreleased] -> [$NEW_VERSION] - $TODAY (and reinsert empty [Unreleased])"
+else
+  python -c "
+import re, pathlib
+p = pathlib.Path('CHANGELOG.md')
+text = p.read_text()
+# Match the bare heading line (no trailing-whitespace consume) so the original
+# newline + blank line between sections is preserved as the separator after
+# the new versioned heading we're inserting.
+new = re.sub(
+    r'^## \[Unreleased\]$',
+    '## [Unreleased]\n\n## [$NEW_VERSION] - $TODAY',
+    text, count=1, flags=re.M)
+p.write_text(new)
+"
+  run git add CHANGELOG.md
+  run git commit --amend --no-edit
 fi
 
 # --- Tag and push ---

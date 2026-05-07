@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-06
+
+### Added
+- **Family aliases** (`config.yaml`): `family[].aliases` field maps alternate names (e.g. nicknames or legal names) to canonical family members. The vision LLM is instructed to map aliases to the canonical name; `_map_patient_name` and `_build_receipt` post-normalize as a safety net so an LLM that returns an alias never produces an out-of-vocabulary patient.
+- **Filename-based patient hints**: `detect_patient_hint()` in `llm_extractor.py` tokenizes filenames and matches against family names + aliases. The prompt receives a directive ("FILENAME HINT: this file is named for X") with a worked Amazon example to override the cardholder-vs-patient confusion. Resolves the Amazon/Costco shipping-address-overrides-recipient problem where the buyer is on the receipt but the dependent is the actual patient.
+- **`scripts/verify.sh`**: ruff check + format check + pytest gate. Run before any commit/PR.
+- **`scripts/release.sh`**: gated dual-repo release (verify → bump → tag → push origin + lazy-hsa → GitHub releases on both). `--check` for dry run. Pre-flights wiki-repo cleanliness and auto-bumps CHANGELOG `[Unreleased]` into a versioned heading.
+- **Aetna parser regression tests**: synthetic-fixture–driven coverage for pdfplumber output edge cases (cross-page service date, header stripping, line wrapping).
+
+### Security
+- **pypdf** bumped to 6.9.2 (#30, dependabot).
+
 ## [1.4.0] - 2026-03-22
 
 ### Added
