@@ -173,7 +173,7 @@ PAID INVOICES / STATEMENTS (doctor offices, clinics, optometrists):
 General Rules:
 - patient_name MUST be exactly one of: {family_members}
 - Match the patient/recipient in the document to the closest family member name
-- If unclear, default to the first family member ({default_patient})
+{patient_context}- If unclear, default to the first family member ({default_patient})
 - Respond with ONLY the JSON object, no other text
 {provider_skill}"""
 
@@ -410,9 +410,43 @@ def detect_provider_skill(filename: str, hints: list[str] | None = None) -> str 
     return None
 
 
+def detect_patient_hint(
+    filename: str,
+    family_members: list[str],
+    family_aliases: dict[str, str] | None = None,
+) -> str | None:
+    """Detect likely patient from a filename, returning the canonical family name.
+
+    Looks for any family member name (e.g. "max", "ming") or alias (e.g. "thuy")
+    appearing as a token in the filename. Aliases are mapped to their canonical name
+    (e.g. "thuy_2026.pdf" -> "Vanessa").
+
+    Returns None if no match. Uses word-boundary matching so "amazon" doesn't
+    accidentally match "max" — the candidate name must appear as its own token.
+    """
+    aliases = family_aliases or {}
+    stem = filename.rsplit(".", 1)[0].lower()
+    # Tokenize on common filename separators.
+    tokens = set(re.split(r"[_\-\s.]+", stem))
+
+    # Direct family-member match.
+    for name in family_members:
+        if name.lower() in tokens:
+            return name
+
+    # Alias match.
+    for alias, canonical in aliases.items():
+        if alias.lower() in tokens:
+            return canonical
+
+    return None
+
+
 def get_extraction_prompt(
     family_members: list[str] | None = None,
     provider_skill: str | None = None,
+    family_aliases: dict[str, str] | None = None,
+    patient_hint: str | None = None,
 ) -> str:
     """Generate extraction prompt with family member names and optional provider skill.
 
@@ -435,10 +469,39 @@ def get_extraction_prompt(
     skill_text = skill_text.replace("{current_year}", str(now.year))
     skill_text = skill_text.replace("{current_year_short}", str(now.year % 100))
 
+    # Build patient_context block: aliases + filename hint.
+    # Each non-empty section ends with a newline so it slots cleanly into the
+    # General Rules bullet list.
+    parts: list[str] = []
+    if family_aliases:
+        alias_lines = [
+            f"  '{alias}' on a receipt means '{canonical}' (return \"{canonical}\")"
+            for alias, canonical in family_aliases.items()
+        ]
+        parts.append("- Alias rules (use these to map alternate names):\n" + "\n".join(alias_lines))
+    if patient_hint:
+        parts.append(
+            f'- FILENAME HINT: this file is named for "{patient_hint}". '
+            f'Return patient_name = "{patient_hint}".\n'
+            f"  IMPORTANT for Amazon/Costco/CVS/Target/Walgreens receipts: these show the "
+            f"BUYER (account holder, shipping address, payment method), not the patient. "
+            f"For HSA tracking, the patient is who the product is FOR, identified by the "
+            f"filename. Worked example:\n"
+            f"    Amazon receipt shows: Account: Ming Hsu / Ship to: Ming Hsu / Pay: Visa\n"
+            f"    Filename: amazon_max_eyedrops.pdf\n"
+            f'    CORRECT: patient_name = "Maxwell" (NOT "Ming")\n'
+            f"  The buyer info on the receipt is IRRELEVANT to the patient. The filename "
+            f"hint identifies the recipient. Override the hint ONLY if the receipt EXPLICITLY "
+            f'states "Patient: <name>", "Prescription for: <name>", or "Rx for: <name>" naming '
+            f"a DIFFERENT family member."
+        )
+    patient_context = ("\n".join(parts) + "\n") if parts else ""
+
     return EXTRACTION_PROMPT_TEMPLATE.format(
         family_members=", ".join(family_members),
         default_patient=family_members[0],
         provider_skill=skill_text,
+        patient_context=patient_context,
     )
 
 
@@ -454,6 +517,7 @@ class VisionExtractor:
         max_tokens: int = 2048,
         temperature: float = 0.1,
         family_members: list[str] | None = None,
+        family_aliases: dict[str, str] | None = None,
     ):
         self.api_base = api_base.rstrip("/")
         self.model = model
@@ -462,8 +526,23 @@ class VisionExtractor:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.family_members = family_members or ["Alice", "Bob", "Charlie"]
+        # Lowercase-keyed alias -> canonical name (e.g. {"thuy": "Vanessa"}).
+        self.family_aliases: dict[str, str] = {
+            k.lower(): v for k, v in (family_aliases or {}).items()
+        }
+        # Warn (but don't reject) if an alias points to a name outside the
+        # configured family — this would otherwise silently leak non-family
+        # names into patient_name fields.
+        for alias, target in self.family_aliases.items():
+            if target not in self.family_members:
+                logger.warning(
+                    "Alias '%s' targets '%s' which is not a configured family member",
+                    alias,
+                    target,
+                )
         self._client = None
         self._current_provider_skill = None  # Set per-file extraction
+        self._current_patient_hint = None  # Set per-file extraction
 
     def _init_client(self):
         if self._client is None:
@@ -634,6 +713,8 @@ Analyze the text above to extract the JSON data. The text contains content from 
         return get_extraction_prompt(
             family_members=self.family_members,
             provider_skill=self._current_provider_skill,
+            family_aliases=self.family_aliases,
+            patient_hint=self._current_patient_hint,
         )
 
     def _extract_xlsx_claims(self, file_path: Path) -> MultiClaimExtraction:
@@ -1260,10 +1341,11 @@ Output JSON only, starting with {{ and ending with }}:"""
     def _map_patient_name(self, raw_name: str) -> str:
         """Map raw patient names from EOB to family member names.
 
-        Uses positional mapping for generic terms:
-        - Index 0: primary account holder ("self", "subscriber")
-        - Index 1: spouse ("spouse", "wife", "husband")
-        - Index 2+: dependents ("son", "daughter", "child", "dependent")
+        Resolution order:
+        1. Exact family member name (substring match against canonical names).
+        2. Alias match (e.g. "Thuy" -> "Vanessa", configured per-family in config.yaml).
+        3. Positional mapping for generic terms ("self"/"spouse"/"dependent").
+        4. Fall back to first family member.
         """
         raw_lower = raw_name.lower()
 
@@ -1271,6 +1353,11 @@ Output JSON only, starting with {{ and ending with }}:"""
         for name in self.family_members:
             if name.lower() in raw_lower:
                 return name
+
+        # Then check aliases (configured family aliases like "Thuy" -> "Vanessa")
+        for alias_lower, canonical in self.family_aliases.items():
+            if alias_lower in raw_lower:
+                return canonical
 
         # Map generic terms to family members by position
         if len(self.family_members) >= 1 and any(
@@ -1411,6 +1498,13 @@ Output JSON only, starting with {{ and ending with }}:"""
         if self._current_provider_skill:
             logger.info(f"Detected provider skill: {self._current_provider_skill}")
 
+        # Detect patient hint from filename (e.g. "Max_dental.pdf" -> "Maxwell").
+        self._current_patient_hint = detect_patient_hint(
+            file_path.name, self.family_members, self.family_aliases
+        )
+        if self._current_patient_hint:
+            logger.info(f"Detected patient hint from filename: {self._current_patient_hint}")
+
         suffix = file_path.suffix.lower()
 
         try:
@@ -1427,8 +1521,9 @@ Output JSON only, starting with {{ and ending with }}:"""
 
             raise ValueError(f"Unsupported file type: {suffix}")
         finally:
-            # Reset provider skill after extraction
+            # Reset provider skill / patient hint after extraction
             self._current_provider_skill = None
+            self._current_patient_hint = None
 
     def _extract_with_conversion(self, file_path: Path, suffix: str) -> ExtractedReceipt:
         """Extract from image formats that require conversion to PNG first."""
@@ -1535,11 +1630,24 @@ Output JSON only, starting with {{ and ending with }}:"""
         if isinstance(service_type, list):
             service_type = ", ".join(str(s) for s in service_type)
 
+        # Normalize patient name through aliases / family-member matching
+        # so an LLM that returned "Thuy" (alias) or "Max Smith" lands on the
+        # canonical name. Treat blank or literal "Unknown" the same: prefer
+        # the filename hint, otherwise leave as "Unknown" rather than silently
+        # picking the first family member via _map_patient_name's fallback.
+        raw_patient = parsed.get("patient_name") or ""
+        if not raw_patient or raw_patient == "Unknown":
+            patient_name = self._current_patient_hint or "Unknown"
+        elif raw_patient not in self.family_members:
+            patient_name = self._map_patient_name(raw_patient)
+        else:
+            patient_name = raw_patient
+
         return ExtractedReceipt(
             provider_name=parsed.get("provider_name") or "Unknown",
             service_date=parsed.get("service_date"),
             service_type=service_type,
-            patient_name=parsed.get("patient_name") or "Unknown",
+            patient_name=patient_name,
             billed_amount=billed_amount,
             insurance_paid=insurance_paid,
             patient_responsibility=patient_responsibility,

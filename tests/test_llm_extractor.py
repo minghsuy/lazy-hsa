@@ -5,6 +5,7 @@ import pytest
 from src.processors.llm_extractor import (
     ExtractedReceipt,
     VisionExtractor,
+    detect_patient_hint,
     detect_provider_skill,
     get_extraction_prompt,
 )
@@ -357,3 +358,164 @@ class TestMockExtractor:
         assert result.provider_name == "Mock Provider"
         assert result.confidence_score == 0.95
         assert result.raw_extraction.get("mock") is True
+
+
+class TestDetectPatientHint:
+    """Tests for the filename-based patient hint detector."""
+
+    FAMILY = ["Alice", "Bob", "Maxwell"]
+    ALIASES = {"thuy": "Vanessa", "max": "Maxwell"}
+
+    def test_direct_family_member_match(self):
+        assert detect_patient_hint("alice_dental_2026.pdf", self.FAMILY) == "Alice"
+
+    def test_alias_resolves_to_canonical(self):
+        assert detect_patient_hint("thuy_eyeglasses.pdf", self.FAMILY, self.ALIASES) == "Vanessa"
+
+    def test_alias_for_existing_canonical(self):
+        """`max` alias should resolve to `Maxwell`, not the literal `Max`."""
+        assert (
+            detect_patient_hint("amazon_max_eyedrops.pdf", self.FAMILY, self.ALIASES) == "Maxwell"
+        )
+
+    def test_no_match_returns_none(self):
+        assert detect_patient_hint("amazon_receipt.pdf", self.FAMILY, self.ALIASES) is None
+
+    def test_token_boundary_prevents_substring_match(self):
+        """`amazon` must not match `max` — token-based, not substring."""
+        # "amazon" tokenizes to {"amazon", "receipt"} — neither is "max".
+        assert detect_patient_hint("amazon.pdf", self.FAMILY, self.ALIASES) is None
+
+    def test_case_insensitive(self):
+        assert detect_patient_hint("ALICE_RX.PDF", self.FAMILY) == "Alice"
+        assert detect_patient_hint("Thuy_2026.PDF", self.FAMILY, self.ALIASES) == "Vanessa"
+
+    def test_separators_dot_dash_underscore_space(self):
+        for fname in (
+            "alice.dental.pdf",
+            "alice-dental.pdf",
+            "alice_dental.pdf",
+            "alice dental.pdf",
+        ):
+            assert detect_patient_hint(fname, self.FAMILY) == "Alice", fname
+
+    def test_no_aliases_provided(self):
+        """Aliases default to None — direct match still works."""
+        assert detect_patient_hint("bob_lab.pdf", self.FAMILY) == "Bob"
+
+    def test_family_name_takes_precedence_over_alias(self):
+        """If filename contains both a canonical name and an alias, canonical wins."""
+        # Build a config where alias points elsewhere.
+        family = ["Alice", "Vanessa"]
+        aliases = {"alice": "Vanessa"}  # contrived: "alice" alias → "Vanessa"
+        # Direct match on canonical "Alice" should win over alias mapping.
+        assert detect_patient_hint("alice_visit.pdf", family, aliases) == "Alice"
+
+
+class TestMapPatientNameAliasPath:
+    """Tests for VisionExtractor._map_patient_name alias resolution."""
+
+    @pytest.fixture
+    def extractor(self):
+        return VisionExtractor(
+            family_members=["Alice", "Bob", "Maxwell"],
+            family_aliases={"Thuy": "Vanessa", "Max": "Maxwell"},
+        )
+
+    def test_alias_resolves(self, extractor):
+        # `Thuy` is not a family member — must resolve via alias to `Vanessa`.
+        assert extractor._map_patient_name("Thuy") == "Vanessa"
+
+    def test_alias_case_insensitive(self, extractor):
+        assert extractor._map_patient_name("THUY") == "Vanessa"
+
+    def test_alias_substring(self, extractor):
+        # Alias matched as substring (LLM returned full string with alias inside).
+        assert extractor._map_patient_name("Patient: Thuy Nguyen") == "Vanessa"
+
+    def test_canonical_name_beats_alias(self, extractor):
+        """Canonical match resolves before alias check, so 'Maxwell' returns 'Maxwell'."""
+        assert extractor._map_patient_name("Maxwell") == "Maxwell"
+
+    def test_positional_self_used_when_no_alias_match(self, extractor):
+        """`(self)` falls through to positional → first family member."""
+        assert extractor._map_patient_name("(self)") == "Alice"
+
+    def test_aliases_lowercased_at_construction(self):
+        """Aliases passed with mixed case are stored lowercase, still match."""
+        ext = VisionExtractor(family_members=["Alice"], family_aliases={"NICK": "Alice"})
+        assert "nick" in ext.family_aliases
+        assert "NICK" not in ext.family_aliases
+
+
+class TestBuildReceiptPatientNormalization:
+    """Tests for _build_receipt patient_name normalization via aliases / hint."""
+
+    @pytest.fixture
+    def extractor(self):
+        return VisionExtractor(
+            family_members=["Alice", "Bob", "Maxwell"],
+            family_aliases={"max": "Maxwell"},
+        )
+
+    def _base_parsed(self, **overrides) -> dict:
+        parsed = {
+            "provider_name": "Test Clinic",
+            "service_date": "2026-01-04",
+            "service_type": "Visit",
+            "patient_name": "Alice",
+            "billed_amount": 100.0,
+            "insurance_paid": 80.0,
+            "patient_responsibility": 20.0,
+            "hsa_eligible": True,
+            "category": "medical",
+            "document_type": "eob",
+            "confidence_score": 0.9,
+            "notes": "",
+        }
+        parsed.update(overrides)
+        return parsed
+
+    def test_canonical_name_passes_through(self, extractor):
+        receipt = extractor._build_receipt(self._base_parsed(patient_name="Alice"))
+        assert receipt.patient_name == "Alice"
+
+    def test_alias_normalized_to_canonical(self, extractor):
+        """LLM returned alias `Max` → must land on canonical `Maxwell`."""
+        receipt = extractor._build_receipt(self._base_parsed(patient_name="Max"))
+        assert receipt.patient_name == "Maxwell"
+
+    def test_full_name_stripped_to_canonical(self, extractor):
+        """LLM returned `Alice Smith` → substring match yields `Alice`."""
+        receipt = extractor._build_receipt(self._base_parsed(patient_name="Alice Smith"))
+        assert receipt.patient_name == "Alice"
+
+    def test_filename_hint_used_when_llm_returned_blank(self, extractor):
+        """Empty patient_name with active hint → hint wins."""
+        extractor._current_patient_hint = "Maxwell"
+        receipt = extractor._build_receipt(self._base_parsed(patient_name=""))
+        assert receipt.patient_name == "Maxwell"
+
+    def test_blank_with_no_hint_falls_back_to_unknown(self, extractor):
+        extractor._current_patient_hint = None
+        receipt = extractor._build_receipt(self._base_parsed(patient_name=""))
+        assert receipt.patient_name == "Unknown"
+
+    def test_llm_value_wins_over_hint_when_both_present(self, extractor):
+        """If LLM returned a real value, hint is not consulted (existing precedence)."""
+        extractor._current_patient_hint = "Maxwell"
+        receipt = extractor._build_receipt(self._base_parsed(patient_name="Alice"))
+        assert receipt.patient_name == "Alice"
+
+    def test_literal_unknown_falls_back_to_hint(self, extractor):
+        """LLM returning literal 'Unknown' must defer to filename hint, not silently
+        map to the first family member via positional fallback."""
+        extractor._current_patient_hint = "Maxwell"
+        receipt = extractor._build_receipt(self._base_parsed(patient_name="Unknown"))
+        assert receipt.patient_name == "Maxwell"
+
+    def test_literal_unknown_with_no_hint_stays_unknown(self, extractor):
+        """LLM returned 'Unknown' and no filename hint → preserve 'Unknown'."""
+        extractor._current_patient_hint = None
+        receipt = extractor._build_receipt(self._base_parsed(patient_name="Unknown"))
+        assert receipt.patient_name == "Unknown"

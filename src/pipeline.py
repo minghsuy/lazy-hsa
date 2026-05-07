@@ -69,6 +69,27 @@ class HSAReceiptPipeline:
         self.family_names = (
             [m.get("name", "Unknown") for m in family] if family else ["Alice", "Bob", "Charlie"]
         )
+        # Alias -> canonical name (lowercase keys). Lets receipts/filenames
+        # use nicknames or alternate spellings (e.g. "Thuy" -> "Vanessa").
+        # Warn on collisions across family members so duplicate aliases in
+        # config don't silently resolve to whichever member happened to be
+        # processed last.
+        self.family_aliases: dict[str, str] = {}
+        for member in family:
+            name = member.get("name")
+            if not name:
+                continue
+            for alias in member.get("aliases", []) or []:
+                key = alias.lower()
+                if key in self.family_aliases and self.family_aliases[key] != name:
+                    logger.warning(
+                        "Duplicate alias '%s' for both '%s' and '%s' — using '%s'",
+                        alias,
+                        self.family_aliases[key],
+                        name,
+                        name,
+                    )
+                self.family_aliases[key] = name
 
         # Initialize components (lazy)
         self._llm = None
@@ -105,6 +126,13 @@ class HSAReceiptPipeline:
 
         The LLM prompt constrains patient_name to be one of the family members,
         but this is a safety net in case it returns something else.
+
+        Resolution order is intentionally stricter than
+        ``VisionExtractor._map_patient_name``: this path checks alias *exact*
+        match before falling into substring matching. The extractor's path is
+        looser because EOB patient strings often include extra context (role
+        markers, full names) that need substring tolerance. Keep both paths in
+        sync if you change one.
         """
         if not extracted_name:
             return self.family_names[0]
@@ -113,11 +141,21 @@ class HSAReceiptPipeline:
         if extracted_name in self.family_names:
             return extracted_name
 
-        # Fallback: fuzzy match (in case LLM returned something like "Alice Smith")
         extracted_lower = extracted_name.lower()
+
+        # Alias match (e.g. "Thuy" -> "Vanessa")
+        if extracted_lower in self.family_aliases:
+            return self.family_aliases[extracted_lower]
+
+        # Substring match against canonical names (e.g. "Alice Smith" -> "Alice")
         for family_name in self.family_names:
             if family_name.lower() in extracted_lower:
                 return family_name
+
+        # Substring match against aliases (e.g. "Thuy Smith" -> "Vanessa")
+        for alias_lower, canonical in self.family_aliases.items():
+            if alias_lower in extracted_lower:
+                return canonical
 
         # Default to primary holder
         return self.family_names[0]
@@ -416,6 +454,7 @@ class HSAReceiptPipeline:
                 max_tokens=llm_config.get("max_tokens", 2048),
                 temperature=llm_config.get("temperature", 0.1),
                 family_members=self.family_names,
+                family_aliases=self.family_aliases,
             )
         return self._llm
 
