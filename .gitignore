@@ -46,3 +46,6 @@ tmp/
 
 # GitHub Wiki (separate git repository)
 wiki-repo/
+
+# Claude Code session state and worktrees
+.claude/
