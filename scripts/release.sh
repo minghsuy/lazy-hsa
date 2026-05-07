@@ -79,7 +79,19 @@ if [[ -d "$REPO_DIR/wiki-repo" ]]; then
     git -C "$REPO_DIR/wiki-repo" status --short
     exit 1
   fi
-  run git -C "$REPO_DIR/wiki-repo" pull --ff-only
+  # Skip pull if wiki-repo is in detached HEAD or has no upstream configured —
+  # `git pull --ff-only` would fail under set -e and abort the release. The
+  # pre-flight cleanliness check above is the actual safety; pull is a
+  # convenience. (Note: this guards against MISCONFIGURED upstreams, not
+  # UNREACHABLE ones — a configured-but-down remote will still abort.)
+  wiki_branch="$(git -C "$REPO_DIR/wiki-repo" rev-parse --abbrev-ref HEAD 2>/dev/null)" || wiki_branch=""
+  if [[ -z "$wiki_branch" || "$wiki_branch" == "HEAD" ]]; then
+    echo "warn: wiki-repo is in detached HEAD — skipping pull (still safe; tree is clean)"
+  elif ! git -C "$REPO_DIR/wiki-repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+    echo "warn: wiki-repo branch '$wiki_branch' has no upstream configured — skipping pull"
+  else
+    run git -C "$REPO_DIR/wiki-repo" pull --ff-only
+  fi
 else
   echo "warn: wiki-repo not present at $REPO_DIR/wiki-repo — skipping wiki sync"
 fi
@@ -92,9 +104,9 @@ else
   python -c "
 import re, pathlib
 p = pathlib.Path('pyproject.toml')
-t = p.read_text()
+t = p.read_text(encoding='utf-8')
 t = re.sub(r'^version = \".*\"', 'version = \"$NEW_VERSION\"', t, count=1, flags=re.M)
-p.write_text(t)
+p.write_text(t, encoding='utf-8')
 "
   run git add pyproject.toml
   run git commit -m "Release v${NEW_VERSION}"
@@ -117,7 +129,7 @@ else
   python -c "
 import re, pathlib
 p = pathlib.Path('CHANGELOG.md')
-text = p.read_text()
+text = p.read_text(encoding='utf-8')
 # Match the bare heading line (no trailing-whitespace consume) so the original
 # newline + blank line between sections is preserved as the separator after
 # the new versioned heading we're inserting.
@@ -125,7 +137,7 @@ new = re.sub(
     r'^## \[Unreleased\]$',
     '## [Unreleased]\n\n## [$NEW_VERSION] - $TODAY',
     text, count=1, flags=re.M)
-p.write_text(new)
+p.write_text(new, encoding='utf-8')
 "
   run git add CHANGELOG.md
   run git commit --amend --no-edit

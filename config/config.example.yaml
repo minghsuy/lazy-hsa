@@ -85,17 +85,18 @@ scanner:
 # The vision LLM is instructed to map aliases to the canonical `name`, and
 # `_map_patient_name` applies the same mapping as a Python safety net. Useful
 # when a receipt prints a legal name different from the preferred name, or
-# when filenames use a nickname (e.g. "amazon_charlie_eyedrops.pdf" with
-# alias "Charlie" -> canonical "Charles").
+# when a filename uses a nickname (e.g. "amazon_chuck_eyedrops.pdf" with
+# alias "Chuck" -> canonical "Charlie").
 family:
   - name: "Alice"
     role: "primary"      # HSA account holder
+    # aliases: ["Allie"]   # optional — applies to primary too if needed
   - name: "Bob"
     role: "spouse"
     aliases: ["Robert", "Bobby"]   # optional alternate names
   - name: "Charlie"
     role: "dependent"    # Children, etc.
-    aliases: ["Charlie Jr.", "C.J."]   # optional
+    aliases: ["Charlie Jr.", "Chuck"]   # optional
 
 # =============================================================================
 # Provider Search Patterns (for email filtering)
