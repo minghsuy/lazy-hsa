@@ -42,34 +42,82 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
-      - name: Fail loudly if review produced no output
-        # Tracks issue #37: claude-review has historically exited cleanly while
-        # producing zero comments/reviews (auth flake, model unavailable, or
-        # silent skip). A green check that didn't actually review anything
-        # creates false confidence — convert it to a loud failure here.
+      - name: Fail loudly if review didn't run on this push
+        # Tracks issue #37. The original guard counted comments and missed
+        # the edit-in-place no-op re-run case: action exits cleanly, leaves
+        # the prior comment unchanged, count stays > 0, false-SUCCESS slips
+        # through.
+        #
+        # Stricter check: require that the latest claude[bot] review's
+        # timestamp is NEWER than the PR's HEAD commit. If the bot didn't
+        # update its comment after the latest push, the check fails loudly.
+        #
+        # Skipped on drafts: the claude-code-action itself may skip on draft
+        # PRs, which would leave LATEST_REVIEW empty and falsely fail this
+        # guard. The `ready_for_review` trigger re-runs the workflow when
+        # the PR leaves draft state, at which point this guard runs.
+        if: ${{ !github.event.pull_request.draft }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           PR_NUMBER="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
           # Brief pause to let any pending comments from the prior step propagate.
           sleep 5
 
-          INLINE=$(gh api "/repos/$REPO/pulls/$PR_NUMBER/comments" \
-            --jq '[.[] | select(.user.login == "claude[bot]" or .user.login == "claude")] | length')
-          CONV=$(gh api "/repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '[.[] | select(.user.login == "claude[bot]" or .user.login == "claude")] | length')
-          REVIEWS=$(gh api "/repos/$REPO/pulls/$PR_NUMBER/reviews" \
-            --jq '[.[] | select(.user.login == "claude[bot]" or .user.login == "claude")] | length')
-          TOTAL=$((INLINE + CONV + REVIEWS))
+          # HEAD commit's committer timestamp — stable per-SHA. Note: amending
+          # without content changes shifts this date forward and may cause
+          # spurious "stale review" failures on rebased/amended PRs. Acceptable
+          # trade-off: rare; user can re-trigger by closing+reopening or pushing
+          # an empty commit. Alternative would be event-time tracking but the
+          # workflow doesn't have stable access to that.
+          HEAD_AT=$(gh api "/repos/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
 
-          echo "claude[bot] output on PR #$PR_NUMBER: $INLINE inline + $CONV conversation + $REVIEWS formal = $TOTAL total"
+          # Latest claude[bot] activity across all comment surfaces.
+          # `updated_at` for issue/PR comments captures edit-in-place re-runs;
+          # `submitted_at` for formal reviews. Take the max.
+          #
+          # Robustness:
+          # - `--paginate` so PRs with >30 prior comments don't miss the latest one.
+          # - `|| true` after each `gh api` so a transient API hiccup on one
+          #   surface doesn't abort the whole pipeline.
+          # - Stderr is intentionally NOT redirected so transient API errors
+          #   show up in CI logs (debuggable failures > silent ones).
+          # - Final `|| true` on the pipeline tolerates SIGPIPE: when there are
+          #   multiple timestamps, `head -1` closes early, `sort` exits 141,
+          #   and pipefail would otherwise abort.
+          LATEST_REVIEW=$(
+            {
+              gh api --paginate "/repos/$REPO/issues/$PR_NUMBER/comments" \
+                --jq '.[] | select(.user.login == "claude[bot]" or .user.login == "claude") | .updated_at' || true
+              gh api --paginate "/repos/$REPO/pulls/$PR_NUMBER/comments" \
+                --jq '.[] | select(.user.login == "claude[bot]" or .user.login == "claude") | .updated_at' || true
+              gh api --paginate "/repos/$REPO/pulls/$PR_NUMBER/reviews" \
+                --jq '.[] | select(.user.login == "claude[bot]" or .user.login == "claude") | .submitted_at' || true
+            } | sort -r | head -1 || true
+          )
 
-          if [[ "$TOTAL" -eq 0 ]]; then
-            echo "::error::Claude Code Review action exited cleanly but produced NO output."
-            echo "::error::Likely causes: auth flake, model unavailable, or silent skip (see issue #37)."
-            echo "::error::Failing loudly so the green check doesn't create false confidence."
+          echo "HEAD commit ($HEAD_SHA) committed at: ${HEAD_AT:-UNKNOWN}"
+          echo "Latest claude[bot] activity:           ${LATEST_REVIEW:-NONE}"
+
+          if [[ -z "$HEAD_AT" ]]; then
+            echo "::error::Could not fetch HEAD commit timestamp from gh api. Network or auth issue."
+            exit 1
+          fi
+
+          if [[ -z "$LATEST_REVIEW" ]]; then
+            echo "::error::No claude[bot] review found on PR #$PR_NUMBER."
+            echo "::error::Action ran but produced no output (auth flake or silent skip — issue #37)."
+            exit 1
+          fi
+
+          # ISO-8601 timestamps sort lexicographically, so string comparison works.
+          if [[ "$LATEST_REVIEW" < "$HEAD_AT" ]]; then
+            echo "::error::Latest claude[bot] activity ($LATEST_REVIEW) is older than HEAD commit ($HEAD_AT)."
+            echo "::error::Action ran but did not update its review for the latest push."
+            echo "::error::Edit-in-place no-op re-run case (issue #37). Failing loudly."
             exit 1
           fi

@@ -27,6 +27,12 @@ uv run ruff format --check src/ tests/
 step "pytest"
 uv run pytest -q
 
+# Record successful verification for the PrePush gate hook.
+# ~/.claude/hooks/require-verify.py reads this to confirm HEAD has been verified
+# before allowing `git push`. Marker is per-repo (lives in .git/config) and
+# auto-invalidates on every new commit (since SHA changes).
+git config --local hooks.last-verify-sha "$(git rev-parse HEAD)"
+
 if (( VERBOSE )); then
-  echo "ok: lint + format + tests pass"
+  echo "ok: lint + format + tests pass (recorded for $(git rev-parse --short HEAD))"
 fi
