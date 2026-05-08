@@ -37,9 +37,7 @@ jobs:
   trigger-review:
     # Skip on drafts. Skip on bot-authored PRs (Dependabot, Renovate) — those
     # don't need automated AI review and would burn PAT API calls per push.
-    if: |
-      ${{ !github.event.pull_request.draft &&
-          github.event.pull_request.user.type != 'Bot' }}
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.user.type != 'Bot' }}
     runs-on: ubuntu-latest
     # Empty permissions block: gh pr comment uses BRIDGE_PAT (not GITHUB_TOKEN),
     # so the job's GITHUB_TOKEN should have zero capability. Explicit `{}` is
