@@ -6,6 +6,24 @@
 set -euo pipefail
 
 LOG="$HOME/logs/hsa-receipt-system-heartbeat.log"
+
+# --check: pre-flight probe used by _meta/scripts/dispatch-to-dgx.sh before
+# registering this job. Confirms the log directory is writable. Heartbeat
+# has no external dependencies, so the probe surface is intentionally tiny —
+# but having a --check sets the convention every dispatched job follows.
+if [[ "${1:-}" == "--check" ]]; then
+    log_dir="$(dirname "$LOG")"
+    mkdir -p "$log_dir"
+    probe="$log_dir/.probe.$$"
+    if : > "$probe" 2>/dev/null; then
+        rm -f "$probe"
+        echo "heartbeat --check: $log_dir writable (ok)"
+        exit 0
+    fi
+    echo "heartbeat --check: $log_dir not writable" >&2
+    exit 1
+fi
+
 mkdir -p "$(dirname "$LOG")"
 
 ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
