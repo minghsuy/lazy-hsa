@@ -35,11 +35,16 @@ concurrency:
 
 jobs:
   trigger-review:
-    if: ${{ !github.event.pull_request.draft }}
+    # Skip on drafts. Skip on bot-authored PRs (Dependabot, Renovate) — those
+    # don't need automated AI review and would burn PAT API calls per push.
+    if: |
+      ${{ !github.event.pull_request.draft &&
+          github.event.pull_request.user.type != 'Bot' }}
     runs-on: ubuntu-latest
-    # No permissions block: gh pr comment uses BRIDGE_PAT (not GITHUB_TOKEN),
-    # so the job's GITHUB_TOKEN never touches the PR. Inheriting the org
-    # default keeps the workflow's own credentials at minimum capability.
+    # Empty permissions block: gh pr comment uses BRIDGE_PAT (not GITHUB_TOKEN),
+    # so the job's GITHUB_TOKEN should have zero capability. Explicit `{}` is
+    # machine-readable and prevents capability inheritance from org defaults.
+    permissions: {}
 
     steps:
       - name: Post @claude review comment
@@ -47,6 +52,10 @@ jobs:
           GH_TOKEN: ${{ secrets.BRIDGE_PAT }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          # Marker embedded in the bridge's comment body so the cleanup
+          # filter only matches bridge-posted comments. A human typing
+          # `@claude review` won't have this marker and stays untouched.
+          MARKER: '<!-- managed by claude-code-review.yml bridge; do not edit -->'
         run: |
           set -euo pipefail
           if [[ -z "${GH_TOKEN:-}" ]]; then
@@ -60,13 +69,19 @@ jobs:
               exit 1
           fi
 
-          # Delete prior bridge comments before posting the new one. Keeps
-          # the PR thread clean on rebasing branches that get many pushes —
-          # otherwise each push stacks another "@claude review" comment.
-          # Match exactly the literal body the bridge posts; human/agent
-          # @claude review comments stay untouched.
-          gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
-              --jq '.[] | select(.body == "@claude review") | .id' \
-              | xargs -r -I{} gh api -X DELETE "repos/${REPO}/issues/comments/{}"
+          BRIDGE_BODY="@claude review ${MARKER}"
 
-          gh pr comment "$PR" -R "$REPO" --body "@claude review"
+          # Delete prior bridge comments before posting the new one. Filter
+          # by the marker so only bridge-authored comments match; human
+          # @claude review comments (without the marker) are untouched.
+          # Note: `gh api`'s built-in `--jq` doesn't accept jq's `--arg`
+          # flag, so we pipe through standalone `jq` (available on every
+          # GitHub-hosted runner) to inject $BRIDGE_BODY safely.
+          # `|| true` prevents a transient DELETE failure from aborting
+          # the step before the new comment posts.
+          gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+              | jq -r --arg body "$BRIDGE_BODY" '.[] | select(.body == $body) | .id' \
+              | xargs -r -I{} gh api -X DELETE "repos/${REPO}/issues/comments/{}" \
+              || true
+
+          gh pr comment "$PR" -R "$REPO" --body "$BRIDGE_BODY"
