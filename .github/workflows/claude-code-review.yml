@@ -1,44 +1,72 @@
 name: Claude Code Review
 
+# Bridge workflow: posts `@claude review` as a PR comment using a PAT.
+#
+# Why a bridge: invoking claude-code-action@v1 from a `pull_request` event
+# hits an upstream Bun internal-error bug ("directory mismatch ... fd 4")
+# consistently and produces no review. The same action+ref+runtime invoked
+# from `issue_comment` (claude.yml) works reliably. So we route the
+# automated PR-event path through a PR comment that triggers claude.yml.
+#
+# Why a PAT (not GITHUB_TOKEN): GitHub Actions explicitly suppresses
+# downstream workflow triggers from events authored by GITHUB_TOKEN — the
+# recursion guard. A PAT-authored issue_comment event IS treated as a real
+# user event and DOES trigger downstream workflows. So the bridge requires
+# `BRIDGE_PAT` (fine-grained PAT, scope: Pull requests Read+Write).
+#
+# When upstream anthropics/claude-code-action#1266 is fixed, this workflow
+# can revert to a direct `claude-code-action@v1` invocation; the PAT becomes
+# dead weight and can be removed.
+#
+# Setup (one-time, per repo with this workflow):
+# - Generate fine-grained PAT at https://github.com/settings/personal-access-tokens
+#   Permissions: Pull requests = Read and write. Scope to this repo only.
+# - Add as repo secret BRIDGE_PAT (Settings -> Secrets and variables -> Actions).
+
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+
+# Cancel an older bridge run for this PR if a new push lands before it
+# finishes — prevents duplicate `@claude review` posts on rapid pushes.
+concurrency:
+  group: claude-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
+  trigger-review:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-      id-token: write
+    # No permissions block: gh pr comment uses BRIDGE_PAT (not GITHUB_TOKEN),
+    # so the job's GITHUB_TOKEN never touches the PR. Inheriting the org
+    # default keeps the workflow's own credentials at minimum capability.
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+      - name: Post @claude review comment
+        env:
+          GH_TOKEN: ${{ secrets.BRIDGE_PAT }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+              echo "::error::BRIDGE_PAT secret is not set on this repo."
+              echo "::error::Setup: Settings -> Secrets and variables -> Actions ->"
+              echo "::error::  New repository secret. Name: BRIDGE_PAT,"
+              echo "::error::  Value: fine-grained PAT with Pull requests Read+Write"
+              echo "::error::Background: anthropics/claude-code-action#1266 - bridge"
+              echo "::error::routes auto-review through @claude mention path; PAT-authored"
+              echo "::error::events trigger downstream workflows, GITHUB_TOKEN ones don't."
+              exit 1
+          fi
 
-      - name: Run Claude Code Review
-        id: claude-review
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          # Delete prior bridge comments before posting the new one. Keeps
+          # the PR thread clean on rebasing branches that get many pushes —
+          # otherwise each push stacks another "@claude review" comment.
+          # Match exactly the literal body the bridge posts; human/agent
+          # @claude review comments stay untouched.
+          gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+              --jq '.[] | select(.body == "@claude review") | .id' \
+              | xargs -r -I{} gh api -X DELETE "repos/${REPO}/issues/comments/{}"
 
+          gh pr comment "$PR" -R "$REPO" --body "@claude review"
