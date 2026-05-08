@@ -1,0 +1,12 @@
+[Unit]
+Description=Heartbeat job for {{REPO}}/{{JOB}}
+OnFailure=status-notify-quiet@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/jobs/{{REPO}}/{{JOB}}
+# Fail loudly at activation rather than silently at first scheduled fire if
+# install-job.sh's {{REPO}}/{{JOB}} substitution somehow produced a literal.
+ExecStartPre=/usr/bin/test -x %h/jobs/{{REPO}}/{{JOB}}/run.sh
+ExecStart=%h/jobs/{{REPO}}/{{JOB}}/run.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
