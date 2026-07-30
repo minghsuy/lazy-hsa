@@ -80,7 +80,6 @@ HOSTLIKE_SSH_DESTINATION = re.compile(
     re.IGNORECASE,
 )
 SINGLE_LABEL_SSH_DESTINATION = re.compile(r"[A-Z0-9][A-Z0-9-]*", re.IGNORECASE)
-SINGLE_LABEL_PROSE_CONTINUATIONS = {"are", "is", "lives", "was", "were"}
 SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 QUALIFIED_PACKAGE_REF = re.compile(
     r"(?<![A-Z0-9_.-])"
@@ -272,7 +271,7 @@ def single_label_destination_is_unambiguous(
     command_index: int,
     destination_index: int,
 ) -> bool:
-    """Avoid treating a sentence beginning with ``ssh <noun>`` as a command."""
+    """Separate a bare line-start command from a complete prose sentence."""
     trailing = tokens[destination_index + 1 :]
     if not trailing or trailing[0] in {"#", ";", "&&", "||", "|", "(", ")"}:
         return True
@@ -282,7 +281,7 @@ def single_label_destination_is_unambiguous(
         or destination_index > command_index + 1
     ):
         return True
-    return trailing[0].lower() not in SINGLE_LABEL_PROSE_CONTINUATIONS
+    return not (len(trailing) >= 2 and trailing[-1].endswith((".", "!", "?")))
 
 
 def uri_host(destination: str, scheme: str) -> str | None:
