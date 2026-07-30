@@ -28,7 +28,7 @@ die() {
 }
 
 project_version() {
-  uv run python - "$1" <<'PY'
+  uv run --frozen python - "$1" <<'PY'
 import sys
 import tomllib
 from pathlib import Path
@@ -39,7 +39,7 @@ PY
 }
 
 lock_version() {
-  uv run python - "$1" <<'PY'
+  uv run --frozen python - "$1" <<'PY'
 import sys
 import tomllib
 from pathlib import Path
@@ -68,7 +68,7 @@ require_newer_version() {
   local requested="$1"
   local current
   current="$(project_version pyproject.toml)"
-  uv run python - "$requested" "$current" <<'PY'
+  uv run --frozen python - "$requested" "$current" <<'PY'
 import sys
 
 requested = tuple(map(int, sys.argv[1].split(".")))
@@ -81,7 +81,7 @@ PY
 }
 
 require_nonempty_changelog() {
-  uv run python - <<'PY'
+  uv run --frozen python - <<'PY'
 import re
 from pathlib import Path
 
@@ -127,7 +127,7 @@ bump_changelog() {
   local version="$1"
   local today
   today="$(date -u +%Y-%m-%d)"
-  uv run python - "$version" "$today" <<'PY'
+  uv run --frozen python - "$version" "$today" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -216,6 +216,17 @@ attest() {
     cd "$artifact_dir"
     sha256sum lazy_hsa-* >SHA256SUMS
   )
+
+  # Verification can take long enough for remote state to change. Recheck the
+  # exact merge pin and all release namespaces immediately before success.
+  git fetch origin main
+  [[ "$(git rev-parse HEAD)" == "$expected_commit" ]] ||
+    die "HEAD changed during release attestation"
+  [[ "$(git rev-parse origin/main)" == "$expected_commit" ]] ||
+    die "public remote main changed during release attestation"
+  require_unpublished_version "$version"
+  git diff --quiet && git diff --cached --quiet ||
+    die "tracked files changed during release attestation"
 
   echo "attested v$version at exact public main $commit"
   echo "release artifacts: $artifact_dir"

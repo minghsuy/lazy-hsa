@@ -29,3 +29,6 @@ def test_public_release_helper_never_publishes():
     assert result.returncode == 0
     assert "does not push, tag, or create" in result.stdout
     assert "attest VERSION MERGE_COMMIT" in result.stdout
+    assert "uv run --frozen python" in script
+    assert script.count("git fetch origin main") >= 3
+    assert script.count('require_unpublished_version "$version"') >= 3
