@@ -32,3 +32,14 @@ def test_public_release_helper_never_publishes():
     assert "uv run --frozen python" in script
     assert script.count("git fetch origin main") >= 3
     assert script.count('require_unpublished_version "$version"') >= 3
+
+
+def test_public_tree_has_no_environment_metadata():
+    """Public package history must not regain local infrastructure details."""
+    result = subprocess.run(
+        [REPO_DIR / "scripts" / "check-public-metadata.py"],
+        cwd=REPO_DIR,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

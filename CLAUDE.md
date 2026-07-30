@@ -148,6 +148,8 @@ The `Is Authoritative` column in the master spreadsheet controls which records c
   `scripts/release.sh attest <version> <merge-commit>` — validate, locally
   prepare, or attest an exact merged public release candidate; they never push,
   tag, or publish.
+- `scripts/check-public-metadata.py` — rejects environment-specific repository,
+  path, SSH endpoint, and contact metadata from the public tree.
 
 ### Running with Poppler (for PDF processing)
 ```bash
