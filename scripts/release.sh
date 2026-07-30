@@ -1,189 +1,190 @@
 #!/usr/bin/env bash
-# Dual-repo release: hsa-receipt-system (private) + lazy-hsa (public mirror).
-# Encodes the workflow previously stored as a memory note.
-#
-# Usage: scripts/release.sh <new-version>     e.g. scripts/release.sh 1.5.0
-#        scripts/release.sh --check           dry run, no writes
+# Prepare a reviewed public release candidate without mutating remote state.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
-DRY_RUN=0
-if [[ "${1:-}" == "--check" ]]; then
-  DRY_RUN=1
-  shift || true
-fi
+usage() {
+  cat <<'EOF'
+usage:
+  scripts/release.sh check VERSION
+  scripts/release.sh prepare VERSION
 
-NEW_VERSION="${1:-}"
-if [[ -z "$NEW_VERSION" ]]; then
-  echo "usage: scripts/release.sh [--check] <new-version>" >&2
-  echo "current: $(grep '^version' pyproject.toml | head -1)" >&2
-  exit 2
-fi
-
-if [[ ! "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: version must be MAJOR.MINOR.PATCH (got: $NEW_VERSION)" >&2
-  exit 2
-fi
-
-run() {
-  if (( DRY_RUN )); then
-    echo "+ $*"
-  else
-    echo "+ $*"
-    "$@"
-  fi
+check    Validate the current public main and proposed version without writes.
+prepare Create a local release/vVERSION branch, update the version, lockfile,
+        and changelog, verify the exact commit, and build hashed artifacts.
+        It does not push, tag, or create a GitHub release.
+EOF
 }
 
-# --- Pre-flight gates ---
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "error: working tree dirty — commit or stash first" >&2
-  git status --short
+die() {
+  echo "error: $*" >&2
   exit 1
-fi
+}
 
-CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$CURRENT_BRANCH" != "main" ]]; then
-  echo "error: must release from main (current: $CURRENT_BRANCH)" >&2
-  exit 1
-fi
+project_version() {
+  uv run python - "$1" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
 
-# Always fetch (read-only) so the sync check uses fresh refs even in --check mode.
-git fetch origin main
-LOCAL=$(git rev-parse HEAD)
-REMOTE=$(git rev-parse origin/main)
-if [[ "$LOCAL" != "$REMOTE" ]]; then
-  echo "error: local main not in sync with origin/main" >&2
-  exit 1
-fi
+with Path(sys.argv[1]).open("rb") as handle:
+    print(tomllib.load(handle)["project"]["version"])
+PY
+}
 
-if git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
-  echo "error: tag v${NEW_VERSION} already exists" >&2
-  exit 1
-fi
+lock_version() {
+  uv run python - "$1" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
 
-# --- Quality gates ---
-echo "==> running verify"
-run "$REPO_DIR/scripts/verify.sh"
+with Path(sys.argv[1]).open("rb") as handle:
+    packages = tomllib.load(handle)["package"]
+root = next(package for package in packages if package["name"] == "lazy-hsa")
+print(root["version"])
+PY
+}
 
-# --- Sync wiki repo (read-only pre-flight) ---
-# wiki-repo/ is a SEPARATE git repo tracking lazy-hsa.wiki.git. We don't
-# auto-write to it (page content is curated per release), but we do want to
-# fail fast if its working tree is dirty — otherwise the user has un-published
-# wiki edits hanging around at release time.
-echo "==> checking wiki"
-if [[ -d "$REPO_DIR/wiki-repo" ]]; then
-  if [[ -n "$(git -C "$REPO_DIR/wiki-repo" status --porcelain 2>/dev/null)" ]]; then
-    echo "error: wiki-repo has uncommitted changes — commit or stash before release" >&2
-    git -C "$REPO_DIR/wiki-repo" status --short
-    exit 1
-  fi
-  # Skip pull if wiki-repo is in detached HEAD or has no upstream configured —
-  # `git pull --ff-only` would fail under set -e and abort the release. The
-  # pre-flight cleanliness check above is the actual safety; pull is a
-  # convenience. (Note: this guards against MISCONFIGURED upstreams, not
-  # UNREACHABLE ones — a configured-but-down remote will still abort.)
-  wiki_branch="$(git -C "$REPO_DIR/wiki-repo" rev-parse --abbrev-ref HEAD 2>/dev/null)" || wiki_branch=""
-  if [[ -z "$wiki_branch" || "$wiki_branch" == "HEAD" ]]; then
-    echo "warn: wiki-repo is in detached HEAD — skipping pull (still safe; tree is clean)"
-  elif ! git -C "$REPO_DIR/wiki-repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-    echo "warn: wiki-repo branch '$wiki_branch' has no upstream configured — skipping pull"
-  else
-    run git -C "$REPO_DIR/wiki-repo" pull --ff-only
-  fi
-else
-  echo "warn: wiki-repo not present at $REPO_DIR/wiki-repo — skipping wiki sync"
-fi
+require_semver() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    die "version must be MAJOR.MINOR.PATCH (got: $1)"
+}
 
-# --- Bump version ---
-echo "==> bumping version to $NEW_VERSION"
-if (( DRY_RUN )); then
-  echo "+ would set version = \"$NEW_VERSION\" in pyproject.toml"
-else
-  python -c "
-import re, pathlib
-p = pathlib.Path('pyproject.toml')
-t = p.read_text(encoding='utf-8')
-t = re.sub(r'^version = \".*\"', 'version = \"$NEW_VERSION\"', t, count=1, flags=re.M)
-p.write_text(t, encoding='utf-8')
-"
-  run git add pyproject.toml
-  run git commit -m "Release v${NEW_VERSION}"
-fi
+require_versions_match() {
+  local project lock
+  project="$(project_version pyproject.toml)"
+  lock="$(lock_version uv.lock)"
+  [[ "$project" == "$lock" ]] ||
+    die "project version $project does not match lock root version $lock"
+}
 
-# --- Bump CHANGELOG.md ---
-# Move the [Unreleased] section to a versioned heading and reinsert an empty
-# [Unreleased] for the next cycle. Amend into the version-bump commit so we
-# get one "Release vX.Y.Z" commit, not two. If [Unreleased] is missing (e.g.
-# user already bumped manually), warn and skip rather than fail.
-echo "==> bumping CHANGELOG"
-TODAY=$(date -u +%Y-%m-%d)
-if [[ ! -f CHANGELOG.md ]]; then
-  echo "warn: CHANGELOG.md not present — skipping bump"
-elif ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
-  echo "warn: no [Unreleased] section in CHANGELOG.md — skipping bump"
-elif (( DRY_RUN )); then
-  echo "+ would bump CHANGELOG.md: [Unreleased] -> [$NEW_VERSION] - $TODAY (and reinsert empty [Unreleased])"
-else
-  python -c "
-import re, pathlib
-p = pathlib.Path('CHANGELOG.md')
-text = p.read_text(encoding='utf-8')
-# Match the bare heading line (no trailing-whitespace consume) so the original
-# newline + blank line between sections is preserved as the separator after
-# the new versioned heading we're inserting.
-new = re.sub(
-    r'^## \[Unreleased\]$',
-    '## [Unreleased]\n\n## [$NEW_VERSION] - $TODAY',
-    text, count=1, flags=re.M)
-p.write_text(new, encoding='utf-8')
-"
-  run git add CHANGELOG.md
-  run git commit --amend --no-edit
-fi
+require_newer_version() {
+  local requested="$1"
+  local current
+  current="$(project_version pyproject.toml)"
+  uv run python - "$requested" "$current" <<'PY'
+import sys
 
-# --- Tag and push ---
-run git tag -a "v${NEW_VERSION}" -m "v${NEW_VERSION}"
-run git push origin main
-run git push origin "v${NEW_VERSION}"
-run git push lazy-hsa main
-run git push lazy-hsa "v${NEW_VERSION}"
+requested = tuple(map(int, sys.argv[1].split(".")))
+current = tuple(map(int, sys.argv[2].split(".")))
+if requested <= current:
+    raise SystemExit(
+        f"error: requested version {sys.argv[1]} must be newer than {sys.argv[2]}"
+    )
+PY
+}
 
-# --- GitHub releases on both remotes ---
-# Skip notes generation in dry-run: the tag doesn't exist yet so `git describe`
-# would silently produce misleading "Initial release." output.
-if (( DRY_RUN )); then
-  echo "+ would generate release notes from git log and create GitHub releases on both remotes"
-  echo
-  echo "==> dry run complete"
-  exit 0
-fi
+require_nonempty_changelog() {
+  uv run python - <<'PY'
+import re
+from pathlib import Path
 
-NOTES_FILE=$(mktemp)
-trap 'rm -f "$NOTES_FILE"' EXIT
-{
-  echo "## What's changed in v${NEW_VERSION}"
-  echo
-  PREV_TAG=$(git describe --tags --abbrev=0 "v${NEW_VERSION}^" 2>/dev/null || echo "")
-  if [[ -n "$PREV_TAG" ]]; then
-    git log "$PREV_TAG..v${NEW_VERSION}" --pretty="format:- %s" --no-merges
-  else
-    echo "Initial release."
-  fi
-} > "$NOTES_FILE"
+text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+match = re.search(
+    r"^## \[Unreleased\]\s*$\n(?P<body>.*?)(?=^## \[|\Z)",
+    text,
+    flags=re.MULTILINE | re.DOTALL,
+)
+if match is None or not match.group("body").strip():
+    raise SystemExit("error: CHANGELOG.md [Unreleased] section is empty")
+PY
+}
 
-run gh release create "v${NEW_VERSION}" \
-  --repo minghsuy/hsa-receipt-system \
-  --title "v${NEW_VERSION}" \
-  --notes-file "$NOTES_FILE"
+preflight() {
+  local version="$1"
+  require_semver "$version"
+  [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty"
+  [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] ||
+    die "must run from main"
+  git fetch origin main
+  [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] ||
+    die "local main is not the exact public remote head"
+  require_versions_match
+  require_newer_version "$version"
+  require_nonempty_changelog
+  [[ -z "$(git ls-remote --tags origin "refs/tags/v$version")" ]] ||
+    die "remote tag v$version already exists"
+  ! git rev-parse --verify "refs/tags/v$version" >/dev/null 2>&1 ||
+    die "local tag v$version already exists"
+  [[ "$(gh release list --repo minghsuy/lazy-hsa --limit 1000 \
+    --json tagName --jq "any(.[]; .tagName == \"v$version\")")" == "false" ]] ||
+    die "GitHub release v$version already exists"
+}
 
-run gh release create "v${NEW_VERSION}" \
-  --repo minghsuy/lazy-hsa \
-  --title "v${NEW_VERSION}" \
-  --notes-file "$NOTES_FILE"
+bump_changelog() {
+  local version="$1"
+  local today
+  today="$(date -u +%Y-%m-%d)"
+  uv run python - "$version" "$today" <<'PY'
+import re
+import sys
+from pathlib import Path
 
-echo
-echo "==> released v${NEW_VERSION} to both repos"
-echo "    https://github.com/minghsuy/hsa-receipt-system/releases/tag/v${NEW_VERSION}"
-echo "    https://github.com/minghsuy/lazy-hsa/releases/tag/v${NEW_VERSION}"
+version, today = sys.argv[1:]
+path = Path("CHANGELOG.md")
+text = path.read_text(encoding="utf-8")
+updated, count = re.subn(
+    r"^## \[Unreleased\]$",
+    f"## [Unreleased]\n\n## [{version}] - {today}",
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+if count != 1:
+    raise SystemExit("CHANGELOG.md must contain exactly one [Unreleased] heading")
+path.write_text(updated, encoding="utf-8")
+PY
+}
+
+prepare() {
+  local version="$1"
+  preflight "$version"
+  git switch -c "release/v$version"
+  uv version "$version"
+  bump_changelog "$version"
+  require_versions_match
+  git add pyproject.toml uv.lock CHANGELOG.md
+  git commit -m "Release v$version"
+
+  # The complete distribution gate runs after the release commit exists.
+  scripts/verify.sh --verbose
+
+  local commit artifact_dir
+  commit="$(git rev-parse HEAD)"
+  artifact_dir="$REPO_DIR/dist/release-v$version"
+  mkdir -p "$artifact_dir"
+  [[ -z "$(find "$artifact_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
+    die "artifact directory is not empty: $artifact_dir"
+  scripts/verify-dist.sh "$artifact_dir"
+  printf '%s\n' "$commit" >"$artifact_dir/RELEASE-COMMIT"
+  (
+    cd "$artifact_dir"
+    sha256sum lazy_hsa-* >SHA256SUMS
+  )
+
+  echo "prepared v$version at $commit"
+  echo "artifacts: $artifact_dir"
+  echo "next: push the branch and open a PR for independent review"
+  echo "nothing was tagged or published"
+}
+
+case "${1:-}" in
+  -h | --help | help)
+    usage
+    ;;
+  check)
+    [[ $# == 2 ]] || { usage >&2; exit 2; }
+    preflight "$2"
+    echo "release preflight passed for v$2; no state changed"
+    ;;
+  prepare)
+    [[ $# == 2 ]] || { usage >&2; exit 2; }
+    prepare "$2"
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

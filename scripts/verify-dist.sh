@@ -3,9 +3,30 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="$(mktemp -d)"
+if (( $# > 1 )); then
+  echo "usage: scripts/verify-dist.sh [ARTIFACT_DIR]" >&2
+  exit 2
+fi
+KEEP_DIST=0
+if (( $# == 1 )); then
+  mkdir -p "$1"
+  DIST_DIR="$(cd "$1" && pwd)"
+  [[ -z "$(find "$DIST_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+    echo "error: artifact directory is not empty: $DIST_DIR" >&2
+    exit 1
+  }
+  KEEP_DIST=1
+else
+  DIST_DIR="$(mktemp -d)"
+fi
 VENV_PARENT="$(mktemp -d)"
-trap 'rm -rf "$DIST_DIR" "$VENV_PARENT"' EXIT
+cleanup() {
+  rm -rf "$VENV_PARENT"
+  if (( ! KEEP_DIST )); then
+    rm -rf "$DIST_DIR"
+  fi
+}
+trap cleanup EXIT
 
 cd "$REPO_DIR"
 
@@ -91,7 +112,7 @@ if "site-packages" not in module_path.parts:
 pillow_heif.register_heif_opener()
 with TemporaryDirectory() as directory:
     source = Path(directory) / "receipt.heic"
-    Image.new("RGB", (2, 2), "white").save(source, "PNG")
+    pillow_heif.from_pillow(Image.new("RGB", (2, 2), "white")).save(source)
     extractor = VisionExtractor()
     expected = object()
     extractor.extract_from_image = Mock(return_value=expected)

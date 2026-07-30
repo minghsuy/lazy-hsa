@@ -15,11 +15,12 @@ uv sync --frozen
 uv run lazy-hsa --help
 ```
 
-Each release is prepared and tested as a wheel and source distribution in a
-clean environment. Those local artifacts are verification inputs, not a promise
-that a package has been published to PyPI. Release notes record their SHA-256
-hashes so an operator can reconcile a partially completed release without
-guessing which candidate was tested.
+Each release candidate is prepared and tested as a wheel and source
+distribution in a clean environment. Those local artifacts and their
+`SHA256SUMS` manifest are verification inputs, not a promise that a package has
+been published to PyPI. `scripts/release.sh prepare X.Y.Z` creates the version
+commit, clean-installs and smoke-tests the retained wheel, and records the
+artifacts locally, but deliberately does not push, tag, or publish.
 
 ## Release invariants
 
@@ -30,6 +31,10 @@ guessing which candidate was tested.
   `pillow_heif`, and exercise the HEIC conversion path.
 - The release tag is created from the exact reviewed merge commit and is never
   moved.
+
+Remote publication is an explicit operator step after the preparation branch is
+independently reviewed and merged. The public repository's release helper does
+not mutate remote release state.
 
 The installed-wheel check intentionally runs in the default test suite. This
 adds a clean build/install step to ordinary CI, but ensures the supported
