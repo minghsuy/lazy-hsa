@@ -4,6 +4,8 @@ import runpy
 import subprocess
 from pathlib import Path
 
+import yaml
+
 REPO_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -33,6 +35,37 @@ def test_public_release_helper_never_publishes():
     assert "uv run --frozen python" in script
     assert script.count("git fetch origin main") >= 3
     assert script.count('require_unpublished_version "$version"') >= 3
+
+
+def test_ci_security_and_tooling_are_fail_closed():
+    """Required CI must not suppress findings or execute mutable action refs."""
+    workflow = yaml.safe_load(
+        (REPO_DIR / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    jobs = workflow["jobs"]
+    security = jobs["security"]
+    bandit_steps = [
+        step for step in security["steps"] if step.get("name") == "Run bandit security linter"
+    ]
+    assert len(bandit_steps) == 1
+    assert "continue-on-error" not in security
+    assert "continue-on-error" not in bandit_steps[0]
+
+    action_steps = []
+    for workflow_path in sorted((REPO_DIR / ".github" / "workflows").glob("*.yml")):
+        parsed = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        action_steps.extend(
+            step
+            for job in parsed.get("jobs", {}).values()
+            for step in job.get("steps", [])
+            if "uses" in step
+        )
+    assert action_steps
+    assert all(
+        len(step["uses"].rpartition("@")[2]) == 40
+        and all(character in "0123456789abcdef" for character in step["uses"].rpartition("@")[2])
+        for step in action_steps
+    )
 
 
 def test_public_tree_has_no_environment_metadata():
@@ -90,7 +123,21 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} private-host echo user@example.com",
         f"{remote_command} private-host # uses {checkout_action}",
         f"{remote_command} prod uptime",
+        f"{remote_command} prod echo 'Deployment complete.'",
         f"{remote_command} backuphost is",
+        # These are syntactically valid remote commands despite reading like
+        # prose. The fail-closed guard requires prose to establish context
+        # before the transport token, as the negative cases below do.
+        f"{remote_command} access is required for deployment.",
+        f"{remote_command} config lives in the user profile.",
+        f"{remote_command} keys live in the home directory.",
+        f"{remote_command} config contains settings for hosts.",
+        f"{remote_command} is a remote protocol.",
+        f"{transfer_command} access is required for file transfer.",
+        f"{remote_command} $'private-host'",
+        f"{remote_command} $'private\\x2dhost'",
+        f"{copy_command} $'private-host:/private/file' .",
+        f"{copy_command} $'private\\055host:/private/file' .",
         remote_command + " owner/user" + "@private-host",
         remote_command + " owner/user" + "@192.168.1.20",
         f"timeout 10 {remote_command} private-host",
@@ -285,12 +332,14 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"use {remote_command} private-host for remote access.",
         f"- {remote_command} private-host is the documented syntax.",
         f"retry-wrapper {remote_command} private-host",
-        f"{remote_command} access is required for deployment.",
-        f"{remote_command} config lives in the user profile.",
-        f"{remote_command} keys live in the home directory.",
-        f"{remote_command} config contains settings for hosts.",
+        f"The {remote_command} access is required for deployment.",
+        f"The {remote_command} config lives in the user profile.",
+        f"The {remote_command} keys live in the home directory.",
+        f"The {remote_command} config contains settings for hosts.",
         f"Run {remote_command} -V to show the version.",
         f"{remote_command} -V",
+        f"{remote_command} $PRIVATE_HOST",
+        f"{copy_command} $PRIVATE_SOURCE ./destination",
         f"sudo -u {remote_command} private-host",
         f"sudo --user {remote_command} private-host",
         f"env -u {remote_command} private-host",
@@ -351,7 +400,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"env -S '{copy_command} example.com:/private/file .'",
         f"sudo {shell_command} -c '{copy_command} example.com:/private/file .'",
         f"Use {transfer_command} private-host for file transfer.",
-        f"{transfer_command} access is required for file transfer.",
+        f"The {transfer_command} access is required for file transfer.",
         f"{transfer_command} example.com",
         f"{transfer_command} host.example.com:/private/path",
         f"{transfer_command} {sftp_uri}example.com/private/path",

@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import codecs
 import re
 import shlex
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -124,6 +126,7 @@ SHELL_COMMANDS = {"bash", "dash", "ksh", "sh", "zsh"}
 SHELL_OPTIONS_WITH_ARGUMENT = {"c", "O", "o"}
 SHELL_LONG_OPTIONS_WITH_ARGUMENT = {"init-file", "rcfile"}
 INLINE_YAML_COMMAND = re.compile(r"^\s*(?:-\s*)?(?:run|command|entrypoint|script)\s*:\s*(.*?)\s*$")
+ANSI_C_QUOTED = re.compile(r"\$'((?:\\.|[^'\\])*)'")
 RAW_GIT_URL_ASSIGNMENT = re.compile(
     r"^\s*(?:[A-Z0-9_.-]+\.)?(?:url|pushurl)\s*=\s*(.*)$",
     re.IGNORECASE,
@@ -287,13 +290,22 @@ def has_disallowed_user_at_host_identifier(
 
 def shell_tokens(line: str) -> list[str]:
     """Tokenize shell punctuation while retaining a fail-closed fallback."""
+
+    def replace_ansi_c_quote(match: re.Match[str]) -> str:
+        body = match.group(1)
+        if "\\" in body:
+            with suppress(UnicodeDecodeError, UnicodeEncodeError):
+                body = codecs.decode(body.encode("ascii"), "unicode_escape")
+        return shlex.quote(body)
+
+    normalized = ANSI_C_QUOTED.sub(replace_ansi_c_quote, line)
     try:
-        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+        lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()")
         lexer.commenters = ""
         lexer.whitespace_split = True
         return list(lexer)
     except ValueError:
-        return re.findall(r"&&|\|\||[;&|()]|[^\s;&|()]+", line)
+        return re.findall(r"&&|\|\||[;&|()]|[^\s;&|()]+", normalized)
 
 
 def config_tokens(line: str) -> list[str]:
@@ -559,25 +571,6 @@ def command_token_sequences(text: str):
                         for option, argument in option_arguments
                         if option in {"S", "split-string"}
                     )
-
-
-def single_label_destination_is_unambiguous(
-    tokens: list[str],
-    command_index: int,
-    destination_index: int,
-    command: str = SSH_COMMAND,
-) -> bool:
-    """Separate a bare line-start command from a complete prose sentence."""
-    trailing = tokens[destination_index + 1 :]
-    if not trailing or trailing[0] in {"#", ";", "&&", "||", "|", "(", ")"}:
-        return True
-    if (
-        command_index > 0
-        or tokens[command_index] != command
-        or destination_index > command_index + 1
-    ):
-        return True
-    return not (len(trailing) >= 2 and trailing[-1].endswith((".", "!", "?")))
 
 
 def uri_host(destination: str, scheme: str) -> str | None:
@@ -963,7 +956,7 @@ def has_ssh_command_without_user(text: str) -> bool:
                 return True
             if not operands:
                 continue
-            destination, destination_index = operands[0]
+            destination, _ = operands[0]
             uri_destination = uri_host(destination, "ssh")
             host = (
                 uri_destination
@@ -974,15 +967,11 @@ def has_ssh_command_without_user(text: str) -> bool:
                 continue
             if uri_destination is not None or HOSTLIKE_SSH_DESTINATION.fullmatch(host):
                 return True
-            if (
-                in_command_position
-                and SINGLE_LABEL_SSH_DESTINATION.fullmatch(host)
-                and single_label_destination_is_unambiguous(
-                    tokens,
-                    index,
-                    destination_index,
-                )
-            ):
+            # A line-start transport plus a single-label first operand is valid
+            # executable syntax even when later arguments read like prose. Text
+            # discussing that syntax must establish a prose context before the
+            # command token rather than relying on terminal punctuation.
+            if in_command_position and SINGLE_LABEL_SSH_DESTINATION.fullmatch(host):
                 return True
     return False
 
@@ -1028,22 +1017,13 @@ def has_sftp_command_with_remote(text: str) -> bool:
                 return True
             if not operands:
                 continue
-            destination, destination_index = operands[0]
+            destination, _ = operands[0]
             host = sftp_remote_host(destination)
             if host is None or not remote_host_is_disallowed(host):
                 continue
             if HOSTLIKE_SSH_DESTINATION.fullmatch(host):
                 return True
-            if (
-                SINGLE_LABEL_SSH_DESTINATION.fullmatch(host)
-                and in_command_position
-                and single_label_destination_is_unambiguous(
-                    tokens,
-                    index,
-                    destination_index,
-                    SFTP_COMMAND,
-                )
-            ):
+            if SINGLE_LABEL_SSH_DESTINATION.fullmatch(host) and in_command_position:
                 return True
     return False
 
