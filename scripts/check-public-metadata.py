@@ -55,7 +55,7 @@ SSH_COMMAND_PREDECESSORS = {
     "do",
 }
 SSH_COMMAND_WRAPPERS = {"command", "env", "exec", "sudo"}
-PROCESS_COMMAND_WRAPPERS = {"busybox", "nice", "nohup", "timeout"}
+PROCESS_COMMAND_WRAPPERS = {"busybox", "nice", "nohup", "time", "timeout"}
 SSH_OPTIONS_WITH_ARGUMENT = set("BbcDEeFIiJLlmOoPpQRSWw")
 SCP_OPTIONS_WITH_ARGUMENT = set("cDFiJloPSX")
 SFTP_OPTIONS_WITH_ARGUMENT = set("BbcDFiJloPRSsX")
@@ -328,15 +328,30 @@ def openssh_match_exec_commands(text: str) -> list[str]:
             continue
         index = 1
         while index < len(tokens):
-            criterion = tokens[index].removeprefix("!").lower()
+            criterion_token = tokens[index].removeprefix("!")
+            criterion, separator, attached_value = criterion_token.partition("=")
+            criterion = criterion.lower()
             if criterion in OPENSSH_MATCH_FLAGS:
                 index += 1
                 continue
-            if criterion not in OPENSSH_MATCH_VALUE_CRITERIA or index + 1 >= len(tokens):
+            if criterion not in OPENSSH_MATCH_VALUE_CRITERIA:
+                break
+            if separator:
+                value = attached_value
+                consumed = 1
+            elif index + 1 < len(tokens) and tokens[index + 1] == "=":
+                if index + 2 >= len(tokens):
+                    break
+                value = tokens[index + 2]
+                consumed = 3
+            elif index + 1 < len(tokens):
+                value = tokens[index + 1]
+                consumed = 2
+            else:
                 break
             if criterion == "exec":
-                commands.append(tokens[index + 1])
-            index += 2
+                commands.append(value)
+            index += consumed
     return commands
 
 
@@ -471,6 +486,10 @@ def consume_process_wrapper(prefix: list[str], index: int, wrapper: str) -> int 
                 if index + 1 >= len(prefix):
                     return None
                 index += 1
+            index += 1
+        return index
+    if wrapper == "time":
+        while index < len(prefix) and prefix[index] in {"-p", "--"}:
             index += 1
         return index
     while index < len(prefix) and prefix[index].startswith("-"):
