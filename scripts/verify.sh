@@ -18,6 +18,9 @@ step() {
   fi
 }
 
+step "sync development environment"
+uv sync --frozen --extra dev
+
 step "ruff check"
 uv run ruff check src/ tests/
 

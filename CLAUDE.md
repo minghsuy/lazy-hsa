@@ -144,7 +144,8 @@ The `Is Authoritative` column in the master spreadsheet controls which records c
 ### Scripts (deterministic — prefer over re-deriving from prose)
 - `scripts/verify.sh` — ruff check + format check + pytest. Run before any commit/PR.
 - `scripts/verify-dist.sh` — build wheel/sdist, validate metadata + lock consistency, and smoke-test a clean installed wheel.
-- `scripts/release.sh <version>` — gated dual-repo release (verify → bump → tag → push origin + lazy-hsa → GitHub releases on both). `--check` for dry run.
+- `scripts/release.sh check|prepare <version>` — validates or locally prepares
+  a public release candidate; it never pushes, tags, or publishes.
 
 ### Running with Poppler (for PDF processing)
 ```bash
