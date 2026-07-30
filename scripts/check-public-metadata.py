@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -24,6 +24,36 @@ USER_AT_HOST_PATTERN = re.compile(
     r"(?![A-Z0-9._-])",
     re.IGNORECASE,
 )
+SSH_COMMAND = "\x73\x73\x68"
+SSH_COMMAND_PREDECESSORS = {
+    "$",
+    "!",
+    "(",
+    ";",
+    "&&",
+    "||",
+    "|",
+    "if",
+    "while",
+    "until",
+    "then",
+    "elif",
+    "else",
+    "do",
+}
+SSH_COMMAND_WRAPPERS = {"command", "env", "exec", "sudo"}
+SSH_OPTIONS_WITH_ARGUMENT = set("BbcDEeFIiJLlmOoPpQRSWw")
+HOSTLIKE_SSH_DESTINATION = re.compile(
+    r"(?:"
+    r"\[[0-9A-F:.%_-]+\]|"
+    r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}|"
+    r"[0-9A-F]*:[0-9A-F:]+|"
+    r"[A-Z0-9][A-Z0-9._-]*[._-][A-Z0-9._-]+"
+    r")",
+    re.IGNORECASE,
+)
+SINGLE_LABEL_SSH_DESTINATION = re.compile(r"[A-Z0-9][A-Z0-9-]*", re.IGNORECASE)
+SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 QUALIFIED_PACKAGE_REF = re.compile(
     r"(?<![A-Z0-9_.-])"
     r"[A-Z0-9_.-]+/[A-Z0-9_.-]+\x40[A-Z0-9._/-]+"
@@ -38,8 +68,11 @@ CONTEXTUAL_PACKAGE_REFS = (
     ),
     re.compile(
         r"\bnpm\s+(?:install|i)(?:\s+--?[A-Z0-9_-]+)*"
-        r"\s+(?:\x40[A-Z0-9_.-]+/)?"
-        r"[A-Z0-9_.-]+\x40[A-Z0-9._/-]+",
+        r"\s+(?:"
+        r"\x40[A-Z0-9_.-]+/[A-Z0-9_.-]+\x40[A-Z0-9._/-]+|"
+        r"[A-Z0-9_.-]+\x40(?:v?[0-9]+(?:\.[0-9]+)*(?:[-+][A-Z0-9.-]+)?|"
+        r"latest|next|beta|alpha|canary)"
+        r")",
         re.IGNORECASE,
     ),
     re.compile(
@@ -85,6 +118,71 @@ def has_disallowed_user_at_host_identifier(text: str) -> bool:
     return False
 
 
+def shell_tokens(line: str) -> list[str]:
+    """Tokenize shell punctuation while retaining a fail-closed fallback."""
+    try:
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+        lexer.commenters = ""
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return re.findall(r"&&|\|\||[;&|()]|[^\s;&|()]+", line)
+
+
+def ssh_destination(tokens: list[str], command_index: int) -> str | None:
+    """Return the destination token after OpenSSH options, if present."""
+    index = command_index + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {";", "&&", "||", "|", "(", ")"}:
+            return None
+        if token == "--":
+            index += 1
+            return tokens[index] if index < len(tokens) else None
+        if not token.startswith("-") or token == "-":
+            return token
+        option = token[1:2]
+        if len(token) == 2 and option in SSH_OPTIONS_WITH_ARGUMENT:
+            index += 1
+        index += 1
+    return None
+
+
+def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
+    """Recognize shell prefixes without mistaking ordinary prose for a command."""
+    index = command_index - 1
+    while index >= 0 and (
+        tokens[index] in SSH_COMMAND_WRAPPERS or SHELL_ASSIGNMENT.fullmatch(tokens[index])
+    ):
+        index -= 1
+    return index < 0 or tokens[index] in SSH_COMMAND_PREDECESSORS
+
+
+def has_ssh_command_without_user(text: str) -> bool:
+    """Reject username-less hostlike SSH destinations in shell command position."""
+    normalized = text.replace("\\\n", " ")
+    for line in normalized.splitlines():
+        tokens = shell_tokens(line)
+        for index, token in enumerate(tokens):
+            if token.rsplit("/", maxsplit=1)[-1] != SSH_COMMAND:
+                continue
+            if not ssh_is_in_command_position(tokens, index):
+                continue
+            destination = ssh_destination(tokens, index)
+            if not destination or "@" in destination:
+                continue
+            normalized_destination = destination.lower().rstrip(".")
+            if normalized_destination == "example.com" or normalized_destination.endswith(
+                ".example.com"
+            ):
+                continue
+            if HOSTLIKE_SSH_DESTINATION.fullmatch(
+                destination
+            ) or SINGLE_LABEL_SSH_DESTINATION.fullmatch(destination):
+                return True
+    return False
+
+
 def tracked_entries(repo_dir: Path = REPO_DIR) -> list[tuple[str, Path]]:
     result = subprocess.run(
         ["git", "ls-files", "--stage", "-z"],
@@ -117,19 +215,6 @@ def decode_tracked_bytes(data: bytes) -> str:
     return "\n".join(decoded)
 
 
-def read_tracked_text(path: Path, mode: str = "100644") -> str | None:
-    """Read working-tree text while preserving a symlink's published target."""
-    try:
-        if mode == "120000" or path.is_symlink():
-            return os.readlink(path)
-        if mode == "160000":
-            return None
-        data = path.read_bytes()
-    except OSError:
-        return None
-    return decode_tracked_bytes(data)
-
-
 def read_index_text(repo_dir: Path, relative_path: Path) -> str | None:
     """Read the exact staged blob so filters and missing link targets cannot hide it."""
     result = subprocess.run(
@@ -145,7 +230,7 @@ def read_index_text(repo_dir: Path, relative_path: Path) -> str | None:
 
 def metadata_categories(text: str) -> list[str]:
     categories = [category for category, pattern in PATTERNS.items() if pattern.search(text)]
-    if has_disallowed_user_at_host_identifier(text):
+    if has_disallowed_user_at_host_identifier(text) or has_ssh_command_without_user(text):
         categories.append("direct SSH machine endpoint")
     contacts = {match.group(0).lower() for match in EMAIL_PATTERN.finditer(text)}
     if any(
