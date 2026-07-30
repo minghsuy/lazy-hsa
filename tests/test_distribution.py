@@ -55,6 +55,8 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     copy_command = "s" + "cp"
     transfer_command = "s" + "ftp"
     relay_command = "n" + "c"
+    sync_command = "r" + "sync"
+    shell_command = "s" + "h"
     for text in (
         f"{remote_command} -i identity -p 2222 {private_endpoint}",
         f"{remote_command} -i identity \\\n  {private_endpoint}",
@@ -124,6 +126,14 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} -o 'ProxyCommand={relay_command} -w5 private-host 22' example.com",
         f"{remote_command} -o 'ProxyCommand={relay_command} -x private-proxy:8080 %h %p' "
         "example.com",
+        f"""{remote_command} -o "ProxyCommand={shell_command} -c \
+'{remote_command} -W %h:%p private-jump-host'" example.com""",
+        f"""{remote_command} -o "ProxyCommand=bash -c \
+'{relay_command} private-host 22'" example.com""",
+        f"""{remote_command} "-oProxyCommand={shell_command} -c \
+'{relay_command} private-host 22'" example.com""",
+        f"""{remote_command} -o "ProxyCommand=/bin/{shell_command} -lc \
+'{relay_command} private-host 22'" example.com""",
         f'{remote_command} -o "ProxyCommand={remote_command} -o '
         f"'ProxyCommand={relay_command} private-host 22' example.com\" example.com",
         f"{remote_command} -J private-jump example.com",
@@ -136,6 +146,14 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} -oProxyJump=private-jump example.com",
         f"{remote_command} -o HostName=private-host example.com",
         f"{remote_command} -oHostName=private-host example.com",
+        f"{remote_command} -L 8080:private-host:80 example.com",
+        f"{remote_command} -L8080:private-host:80 example.com",
+        f"{remote_command} -vvL 8080:private-host:80 example.com",
+        f"{remote_command} -R '[::1]:8080:[fd00::2]:80' example.com",
+        f"{remote_command} -o 'LocalForward 8080 private-host:80' example.com",
+        f"{remote_command} -oLocalForward=8080:private-host:80 example.com",
+        f"{remote_command} -o 'RemoteForward 8080 private-host:80' example.com",
+        f"timeout 10 {remote_command} -L 8080:private-host:80 example.com",
         f"{remote_command} ssh://private-host",
         f"{remote_command} ssh://private-host:2222",
         f"{remote_command} ssh://192.168.1.20",
@@ -169,6 +187,17 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{transfer_command} -vvJ private-jump example.com",
         f"{transfer_command} -oProxyJump=private-jump example.com",
         f"{transfer_command} -o HostName=private-host example.com",
+        f"{sync_command} private-host:/private/path ./destination",
+        f"{sync_command} ./source private-host:/private/path",
+        f"{sync_command} private-host::private-module ./destination",
+        f"{sync_command} user" + "@private-host:/private/path ./destination",
+        f"{sync_command} 192.168.1.20:/private/path ./destination",
+        f"{sync_command} [fd00::1]:/private/path ./destination",
+        f"{sync_command} rsync://private-host/private-module ./destination",
+        f"{sync_command} rsync://[fd00::1]/private-module ./destination",
+        f"/usr/bin/{sync_command} -av ./source private-host:/private/path",
+        f"sudo -u root {sync_command} -e {remote_command} private-host:/private/path ./destination",
+        f"env VAR=x {sync_command} --port 873 rsync://private-host/module ./destination",
     ):
         assert "direct SSH machine endpoint" in categories(text)
     for prose in (
@@ -204,10 +233,22 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} -o 'ProxyCommand={relay_command} -w 5 %h %p' example.com",
         f"{remote_command} -o 'ProxyCommand={relay_command} example.com 22' example.com",
         f"{remote_command} -o 'ProxyCommand={relay_command} -x example.com:8080 %h %p' example.com",
+        f"""{remote_command} -o "ProxyCommand={shell_command} -c \
+'{remote_command} -W %h:%p example.com'" example.com""",
+        f"""{remote_command} -o "ProxyCommand=bash -c \
+'{relay_command} example.com 22'" example.com""",
+        f"""{remote_command} -o "ProxyCommand={shell_command} -c \
+'echo {relay_command} private-host 22'" example.com""",
         f'{remote_command} -o "ProxyCommand={remote_command} -o '
         f"'ProxyCommand={relay_command} example.com 22' example.com\" example.com",
         f'{remote_command} "-oProxyCommand={relay_command} example.com 22" example.com',
         f"{remote_command} -o ProxyCommand=none example.com",
+        f"{remote_command} -L private-bind:8080:example.com:80 example.com",
+        f"{remote_command} -L 8080:%h:80 example.com",
+        f"{remote_command} -L 8080:/tmp/remote.sock example.com",
+        f"{remote_command} -R '[fd00::1]:8080:example.com:80' example.com",
+        f"{remote_command} -o 'LocalForward 8080 example.com:80' example.com",
+        f"{remote_command} -o 'RemoteForward 8080 %h:%p' example.com",
         f"Use {copy_command} private-host:/private/file for copying.",
         f"{copy_command} local-file ./destination",
         f"{copy_command} example.com:/private/file .",
@@ -222,6 +263,19 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{transfer_command} user@example.com:/private/path",
         f"{transfer_command} -J example.com example.com",
         f"{transfer_command} -o HostName=example.com example.com",
+        f"Use {sync_command} private-host:/private/path for synchronization.",
+        f"{sync_command} ./source ./destination",
+        f"{sync_command} example.com:/private/path ./destination",
+        f"{sync_command} host.example.com::module ./destination",
+        f"{sync_command} rsync://example.com/module ./destination",
+        f"{sync_command} user@example.com:/private/path ./destination",
+        f"{sync_command} rsync:///local/path ./destination",
+        f"{sync_command} --exclude private-host:/pattern ./source ./destination",
+        f"{sync_command} ./source --exclude private-host:/pattern ./destination",
+        f"{sync_command} -f private-host:/pattern ./source ./destination",
+        f"{sync_command} -fprivate-host:/pattern ./source ./destination",
+        f"{sync_command} --rsh private-host:/binary ./source ./destination",
+        f"{sync_command} --rsync-path private-host:/binary ./source ./destination",
     ):
         assert "direct SSH machine endpoint" not in categories(prose)
     assert "direct SSH machine endpoint" not in categories("contact user@example.com")

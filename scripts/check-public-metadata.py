@@ -28,6 +28,7 @@ USER_AT_HOST_PATTERN = re.compile(
 SSH_COMMAND = "\x73\x73\x68"
 SCP_COMMAND = "\x73\x63\x70"
 SFTP_COMMAND = "\x73\x66\x74\x70"
+RSYNC_COMMAND = "\x72\x73\x79\x6e\x63"
 SSH_COMMAND_PREDECESSORS = {
     "$",
     "!",
@@ -48,9 +49,71 @@ SSH_COMMAND_WRAPPERS = {"command", "env", "exec", "sudo"}
 SSH_OPTIONS_WITH_ARGUMENT = set("BbcDEeFIiJLlmOoPpQRSWw")
 SCP_OPTIONS_WITH_ARGUMENT = set("cDFiJloPSX")
 SFTP_OPTIONS_WITH_ARGUMENT = set("BbcDFiJloPRSsX")
-ENDPOINT_BEARING_OPTIONS = {"J", "W", "o"}
+RSYNC_OPTIONS_WITH_ARGUMENT = set("BefMT@")
+RSYNC_LONG_OPTIONS_WITH_ARGUMENT = {
+    "address",
+    "backup-dir",
+    "block-size",
+    "bwlimit",
+    "cc",
+    "checksum-seed",
+    "checksum-choice",
+    "chmod",
+    "chown",
+    "compare-dest",
+    "compress-choice",
+    "compress-level",
+    "contimeout",
+    "copy-as",
+    "copy-dest",
+    "debug",
+    "early-input",
+    "exclude",
+    "exclude-from",
+    "files-from",
+    "filter",
+    "groupmap",
+    "iconv",
+    "include",
+    "include-from",
+    "info",
+    "link-dest",
+    "log-file",
+    "log-file-format",
+    "max-alloc",
+    "max-delete",
+    "max-size",
+    "min-size",
+    "modify-window",
+    "only-write-batch",
+    "outbuf",
+    "out-format",
+    "partial-dir",
+    "password-file",
+    "port",
+    "protocol",
+    "read-batch",
+    "remote-option",
+    "rsh",
+    "rsync-path",
+    "skip-compress",
+    "sockopts",
+    "stderr",
+    "stop-after",
+    "stop-at",
+    "suffix",
+    "temp-dir",
+    "timeout",
+    "usermap",
+    "write-batch",
+    "zc",
+    "zl",
+}
+ENDPOINT_BEARING_OPTIONS = {"J", "L", "R", "W", "o"}
 NETCAT_COMMANDS = {"nc", "ncat", "netcat"}
 NETCAT_OPTIONS_WITH_ARGUMENT = set("ceIiMmOPpqsTVwXx")
+SHELL_COMMANDS = {"bash", "dash", "ksh", "sh", "zsh"}
+SHELL_OPTIONS_WITH_ARGUMENT = {"c", "O", "o"}
 WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT = {
     "command": set(),
     "env": set("aCSu"),
@@ -181,8 +244,11 @@ def parse_openssh_arguments(
     tokens: list[str],
     command_index: int,
     options_with_argument: set[str],
+    long_options_with_argument: set[str] | None = None,
+    *,
+    options_after_operands: bool = False,
 ) -> tuple[list[tuple[str, int]], list[tuple[str, str]]]:
-    """Parse operands and short-option arguments for an OpenSSH client."""
+    """Parse operands and option arguments for a shell command."""
     operands: list[tuple[str, int]] = []
     option_arguments: list[tuple[str, str]] = []
     index = command_index + 1
@@ -196,6 +262,23 @@ def parse_openssh_arguments(
             index += 1
             continue
         if options_enabled and token.startswith("-") and token != "-":
+            if token.startswith("--") and long_options_with_argument is not None:
+                name, separator, attached_argument = token[2:].partition("=")
+                if name in long_options_with_argument:
+                    if separator:
+                        option_arguments.append((name, attached_argument))
+                    elif index + 1 < len(tokens) and tokens[index + 1] not in {
+                        ";",
+                        "&&",
+                        "||",
+                        "|",
+                        "(",
+                        ")",
+                    }:
+                        index += 1
+                        option_arguments.append((name, tokens[index]))
+                index += 1
+                continue
             option_cluster = token[1:]
             for option_index, option in enumerate(option_cluster):
                 if option not in options_with_argument:
@@ -216,7 +299,8 @@ def parse_openssh_arguments(
                 break
             index += 1
             continue
-        options_enabled = False
+        if not options_after_operands:
+            options_enabled = False
         operands.append((token, index))
         index += 1
     return operands, option_arguments
@@ -362,6 +446,42 @@ def openssh_option_value(argument: str) -> tuple[str, str] | None:
     return (parts[0].lower(), parts[1]) if len(parts) == 2 else None
 
 
+def split_forward_fields(specification: str) -> list[str]:
+    """Split an SSH forwarding specification without splitting bracketed IPv6."""
+    fields: list[str] = []
+    current: list[str] = []
+    bracket_depth = 0
+    for character in specification:
+        if character == "[":
+            bracket_depth += 1
+        elif character == "]" and bracket_depth:
+            bracket_depth -= 1
+        if character == ":" and bracket_depth == 0:
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(character)
+    fields.append("".join(current))
+    return fields
+
+
+def forwarding_target_host(specification: str) -> str | None:
+    """Extract only the target host from ``-L``/``-R`` forwarding syntax."""
+    fields = split_forward_fields(specification)
+    if len(fields) < 3:
+        return None
+    target = fields[-2]
+    return target[1:-1] if target.startswith("[") and target.endswith("]") else target
+
+
+def openssh_forward_target(value: str) -> str | None:
+    """Extract a target from a LocalForward/RemoteForward config value."""
+    parts = value.split()
+    if len(parts) >= 2:
+        return endpoint_authority_host(parts[1])
+    return forwarding_target_host(value)
+
+
 def option_endpoint_hosts(
     option: str,
     argument: str,
@@ -377,6 +497,9 @@ def option_endpoint_hosts(
     if option == "W":
         host = endpoint_authority_host(argument)
         return [host] if host is not None else []
+    if option in {"L", "R"}:
+        host = forwarding_target_host(argument)
+        return [host] if host is not None else []
     if option != "o":
         return []
     parsed_option = openssh_option_value(argument)
@@ -387,6 +510,9 @@ def option_endpoint_hosts(
         return option_endpoint_hosts("J", value)
     if normalized_key == "hostname":
         host = endpoint_authority_host(value)
+        return [host] if host is not None else []
+    if normalized_key in {"localforward", "remoteforward"}:
+        host = openssh_forward_target(value)
         return [host] if host is not None else []
     if normalized_key == "proxycommand" and inspect_proxy_command:
         return proxy_command_hosts(value)
@@ -407,6 +533,16 @@ def proxy_command_hosts(command: str) -> list[str]:
             tokens = shell_tokens(line)
             for index, token in enumerate(tokens):
                 executable = token.rsplit("/", maxsplit=1)[-1]
+                if executable in SHELL_COMMANDS and ssh_is_in_command_position(tokens, index):
+                    _, option_arguments = parse_openssh_arguments(
+                        tokens,
+                        index,
+                        SHELL_OPTIONS_WITH_ARGUMENT,
+                    )
+                    pending.extend(
+                        argument for option, argument in option_arguments if option == "c"
+                    )
+                    continue
                 if executable == SSH_COMMAND and ssh_is_in_command_position(tokens, index):
                     operands, option_arguments = parse_openssh_arguments(
                         tokens,
@@ -480,6 +616,16 @@ def scp_remote_host(operand: str) -> str | None:
             return None
     host = authority.rsplit("@", maxsplit=1)[-1]
     return host[1:-1] if host.startswith("[") and host.endswith("]") else host
+
+
+def rsync_remote_host(operand: str) -> str | None:
+    """Extract a host from an rsync URI or legacy ``[user@]host:path`` operand."""
+    uri_destination = uri_host(operand, "rsync")
+    if uri_destination is not None:
+        return uri_destination
+    if "://" in operand:
+        return None
+    return scp_remote_host(operand)
 
 
 def sftp_remote_host(operand: str) -> str | None:
@@ -610,6 +756,30 @@ def has_sftp_command_with_remote(text: str) -> bool:
     return False
 
 
+def has_rsync_command_with_remote(text: str) -> bool:
+    """Reject non-example remote operands in shell rsync command position."""
+    normalized = text.replace("\\\n", " ")
+    for line in normalized.splitlines():
+        tokens = shell_tokens(line)
+        for index, token in enumerate(tokens):
+            if token.rsplit("/", maxsplit=1)[-1] != RSYNC_COMMAND:
+                continue
+            if not ssh_is_in_command_position(tokens, index):
+                continue
+            operands, _ = parse_openssh_arguments(
+                tokens,
+                index,
+                RSYNC_OPTIONS_WITH_ARGUMENT,
+                RSYNC_LONG_OPTIONS_WITH_ARGUMENT,
+                options_after_operands=True,
+            )
+            for operand, _ in operands:
+                host = rsync_remote_host(operand)
+                if host is not None and remote_host_is_disallowed(host):
+                    return True
+    return False
+
+
 def tracked_entries(repo_dir: Path = REPO_DIR) -> list[tuple[str, Path]]:
     result = subprocess.run(
         ["git", "ls-files", "--stage", "-z"],
@@ -663,6 +833,7 @@ def metadata_categories(text: str) -> list[str]:
         or has_ssh_command_without_user(text)
         or has_scp_command_with_remote(text)
         or has_sftp_command_with_remote(text)
+        or has_rsync_command_with_remote(text)
     ):
         categories.append("direct SSH machine endpoint")
     contacts = {
