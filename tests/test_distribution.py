@@ -53,6 +53,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     private_endpoint = "user" + "@private-host"
     remote_command = "s" + "sh"
     copy_command = "s" + "cp"
+    transfer_command = "s" + "ftp"
     for text in (
         f"{remote_command} -i identity -p 2222 {private_endpoint}",
         f"{remote_command} -i identity \\\n  {private_endpoint}",
@@ -104,6 +105,16 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} -vv -F /dev/null -p 2222 private-host",
         f"{remote_command} -p2222 private-host",
         f"{remote_command} -o 'ProxyCommand=nc %h %p; true' private-host",
+        f"{remote_command} -J private-jump example.com",
+        f"{remote_command} -Jprivate-jump example.com",
+        f"{remote_command} -vvJ private-jump example.com",
+        f"{remote_command} -W private-host:443 example.com",
+        f"{remote_command} -W private-host:%p example.com",
+        f"{remote_command} -Wprivate-host:443 example.com",
+        f"{remote_command} -o ProxyJump=private-jump example.com",
+        f"{remote_command} -oProxyJump=private-jump example.com",
+        f"{remote_command} -o HostName=private-host example.com",
+        f"{remote_command} -oHostName=private-host example.com",
         f"{remote_command} ssh://private-host",
         f"{remote_command} ssh://private-host:2222",
         f"{remote_command} ssh://192.168.1.20",
@@ -122,6 +133,21 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{copy_command} scp://[fd00::1]/private/file .",
         f"{copy_command} scp://[fe80::1%25eth0]/private/file .",
         f"{copy_command} user" + "@private-host:/private/file .",
+        f"{copy_command} -J private-jump example.com:/private/file .",
+        f"{transfer_command} private-host",
+        f"{transfer_command} private-host:/private/path",
+        f"{transfer_command} user" + "@private-host:/private/path",
+        f"{transfer_command} 192.168.1.20",
+        f"{transfer_command} [fd00::1]",
+        f"{transfer_command} sftp://private-host/private/path",
+        f"{transfer_command} sftp://192.168.1.20/private/path",
+        f"{transfer_command} sftp://[fd00::1]/private/path",
+        f"sudo -u root {transfer_command} -F /dev/null private-host",
+        f"{transfer_command} -J private-jump example.com",
+        f"{transfer_command} -Jprivate-jump example.com",
+        f"{transfer_command} -vvJ private-jump example.com",
+        f"{transfer_command} -oProxyJump=private-jump example.com",
+        f"{transfer_command} -o HostName=private-host example.com",
     ):
         assert "direct SSH machine endpoint" in categories(text)
     for prose in (
@@ -142,12 +168,26 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} host.example.com",
         f"{remote_command} ssh://example.com",
         f"{remote_command} ssh://host.example.com",
+        f"{remote_command} -J example.com example.com",
+        f"{remote_command} -W example.com:443 example.com",
+        f"{remote_command} -W %h:%p example.com",
+        f"{remote_command} -o ProxyJump=example.com example.com",
+        f"{remote_command} -o ProxyJump=none example.com",
+        f"{remote_command} -o HostName=example.com example.com",
         f"Use {copy_command} private-host:/private/file for copying.",
         f"{copy_command} local-file ./destination",
         f"{copy_command} example.com:/private/file .",
         f"{copy_command} host.example.com:/private/file .",
         f"{copy_command} scp://example.com/private/file .",
         f"{copy_command} user@example.com:/private/file .",
+        f"Use {transfer_command} private-host for file transfer.",
+        f"{transfer_command} access is required for file transfer.",
+        f"{transfer_command} example.com",
+        f"{transfer_command} host.example.com:/private/path",
+        f"{transfer_command} sftp://example.com/private/path",
+        f"{transfer_command} user@example.com:/private/path",
+        f"{transfer_command} -J example.com example.com",
+        f"{transfer_command} -o HostName=example.com example.com",
     ):
         assert "direct SSH machine endpoint" not in categories(prose)
     assert "direct SSH machine endpoint" not in categories("contact user@example.com")
@@ -167,6 +207,15 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     )
     assert "direct SSH machine endpoint" not in categories(
         "image: alpine" + "@sha256:" + ("a" * 64)
+    )
+    for reference in (
+        "uses: owner/action@release.dev",
+        "dependency: npm/pico@release.dev",
+    ):
+        assert "direct SSH machine endpoint" not in categories(reference)
+        assert "non-example email address" not in categories(reference)
+    assert "non-example email address" in categories(
+        "uses: owner/action@release.dev; contact person" + "@private.test"
     )
     assert "direct SSH machine endpoint" in categories(
         remote_command + " build-action" + "@private-host"

@@ -27,6 +27,7 @@ USER_AT_HOST_PATTERN = re.compile(
 )
 SSH_COMMAND = "\x73\x73\x68"
 SCP_COMMAND = "\x73\x63\x70"
+SFTP_COMMAND = "\x73\x66\x74\x70"
 SSH_COMMAND_PREDECESSORS = {
     "$",
     "!",
@@ -46,6 +47,8 @@ SSH_COMMAND_PREDECESSORS = {
 SSH_COMMAND_WRAPPERS = {"command", "env", "exec", "sudo"}
 SSH_OPTIONS_WITH_ARGUMENT = set("BbcDEeFIiJLlmOoPpQRSWw")
 SCP_OPTIONS_WITH_ARGUMENT = set("cDFiJloPSX")
+SFTP_OPTIONS_WITH_ARGUMENT = set("BbcDFiJloPRSsX")
+ENDPOINT_BEARING_OPTIONS = {"J", "W", "o"}
 WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT = {
     "command": set(),
     "env": set("aCSu"),
@@ -128,18 +131,34 @@ PATTERNS = {
 }
 
 
-def has_disallowed_user_at_host_identifier(text: str) -> bool:
-    """Reject user-at-host identifiers without attempting to parse shell syntax."""
-    allowed_refs = tuple(QUALIFIED_PACKAGE_REF.finditer(text)) + tuple(
+def allowed_reference_spans(text: str) -> tuple[re.Match[str], ...]:
+    """Return package, action, and image references that use ``@`` safely."""
+    return tuple(QUALIFIED_PACKAGE_REF.finditer(text)) + tuple(
         match for pattern in CONTEXTUAL_PACKAGE_REFS for match in pattern.finditer(text)
     )
+
+
+def is_within_allowed_reference(
+    match: re.Match[str],
+    allowed_refs: tuple[re.Match[str], ...],
+) -> bool:
+    """Return whether a match is wholly contained in a recognized reference."""
+    return any(ref.start() <= match.start() and ref.end() >= match.end() for ref in allowed_refs)
+
+
+def has_disallowed_user_at_host_identifier(
+    text: str,
+    allowed_refs: tuple[re.Match[str], ...] | None = None,
+) -> bool:
+    """Reject user-at-host identifiers without attempting to parse shell syntax."""
+    allowed_refs = allowed_reference_spans(text) if allowed_refs is None else allowed_refs
     for match in USER_AT_HOST_PATTERN.finditer(text):
         identifier = match.group(0).lower()
         if identifier.endswith("@example.com") or identifier in ALLOWED_CONTACTS:
             continue
         # Package, action, and image references may use branches, semver tags,
         # immutable commit SHAs, or content digests.
-        if any(ref.start() <= match.start() and ref.end() >= match.end() for ref in allowed_refs):
+        if is_within_allowed_reference(match, allowed_refs):
             continue
         return True
     return False
@@ -156,36 +175,14 @@ def shell_tokens(line: str) -> list[str]:
         return re.findall(r"&&|\|\||[;&|()]|[^\s;&|()]+", line)
 
 
-def ssh_destination(tokens: list[str], command_index: int) -> tuple[str, int] | None:
-    """Return the destination token and its index after OpenSSH options."""
-    index = command_index + 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token in {";", "&&", "||", "|", "(", ")"}:
-            return None
-        if token == "--":
-            index += 1
-            return (tokens[index], index) if index < len(tokens) else None
-        if not token.startswith("-") or token == "-":
-            return token, index
-        option_cluster = token[1:]
-        for option_index, option in enumerate(option_cluster):
-            if option not in SSH_OPTIONS_WITH_ARGUMENT:
-                continue
-            if option_index == len(option_cluster) - 1:
-                index += 1
-            break
-        index += 1
-    return None
-
-
-def command_operands(
+def parse_openssh_arguments(
     tokens: list[str],
     command_index: int,
     options_with_argument: set[str],
-) -> list[str]:
-    """Return command operands after consuming short options and their arguments."""
-    operands: list[str] = []
+) -> tuple[list[tuple[str, int]], list[tuple[str, str]]]:
+    """Parse operands and short-option arguments for an OpenSSH client."""
+    operands: list[tuple[str, int]] = []
+    option_arguments: list[tuple[str, str]] = []
     index = command_index + 1
     options_enabled = True
     while index < len(tokens):
@@ -201,15 +198,26 @@ def command_operands(
             for option_index, option in enumerate(option_cluster):
                 if option not in options_with_argument:
                     continue
-                if option_index == len(option_cluster) - 1:
+                attached_argument = option_cluster[option_index + 1 :]
+                if attached_argument:
+                    option_arguments.append((option, attached_argument))
+                elif index + 1 < len(tokens) and tokens[index + 1] not in {
+                    ";",
+                    "&&",
+                    "||",
+                    "|",
+                    "(",
+                    ")",
+                }:
                     index += 1
+                    option_arguments.append((option, tokens[index]))
                 break
             index += 1
             continue
         options_enabled = False
-        operands.append(token)
+        operands.append((token, index))
         index += 1
-    return operands
+    return operands, option_arguments
 
 
 def consume_wrapper_options(prefix: list[str], index: int, wrapper: str) -> int | None:
@@ -270,6 +278,7 @@ def single_label_destination_is_unambiguous(
     tokens: list[str],
     command_index: int,
     destination_index: int,
+    command: str = SSH_COMMAND,
 ) -> bool:
     """Separate a bare line-start command from a complete prose sentence."""
     trailing = tokens[destination_index + 1 :]
@@ -277,7 +286,7 @@ def single_label_destination_is_unambiguous(
         return True
     if (
         command_index > 0
-        or tokens[command_index] != SSH_COMMAND
+        or tokens[command_index] != command
         or destination_index > command_index + 1
     ):
         return True
@@ -305,6 +314,59 @@ def remote_host_is_disallowed(host: str) -> bool:
     )
 
 
+def endpoint_authority_host(authority: str) -> str | None:
+    """Extract a host from ``[user@]host[:port]`` endpoint syntax."""
+    authority = authority.strip()
+    if not authority or authority.lower() == "none":
+        return None
+    host_port = authority.rsplit("@", maxsplit=1)[-1]
+    if host_port.startswith("["):
+        closing_bracket = host_port.find("]")
+        return host_port[1:closing_bracket] if closing_bracket > 1 else None
+    if host_port.count(":") == 1:
+        host, _, _ = host_port.partition(":")
+        return host
+    return host_port
+
+
+def option_endpoint_hosts(option: str, argument: str) -> list[str]:
+    """Extract endpoint hosts from ``-J``, ``-W``, and selected ``-o`` values."""
+    if option == "J":
+        return [
+            host
+            for endpoint in argument.split(",")
+            if (host := endpoint_authority_host(endpoint)) is not None
+        ]
+    if option == "W":
+        host = endpoint_authority_host(argument)
+        return [host] if host is not None else []
+    if option != "o":
+        return []
+    key, separator, value = argument.partition("=")
+    if not separator:
+        parts = argument.split(maxsplit=1)
+        if len(parts) != 2:
+            return []
+        key, value = parts
+    normalized_key = key.lower()
+    if normalized_key == "proxyjump":
+        return option_endpoint_hosts("J", value)
+    if normalized_key == "hostname":
+        host = endpoint_authority_host(value)
+        return [host] if host is not None else []
+    return []
+
+
+def has_disallowed_option_endpoint(option_arguments: list[tuple[str, str]]) -> bool:
+    """Return whether parsed OpenSSH options contain a private endpoint."""
+    return any(
+        remote_host_is_disallowed(host)
+        for option, argument in option_arguments
+        if option in ENDPOINT_BEARING_OPTIONS
+        for host in option_endpoint_hosts(option, argument)
+    )
+
+
 def scp_remote_host(operand: str) -> str | None:
     """Extract the host from an SCP URI or legacy ``host:path`` operand."""
     uri_destination = uri_host(operand, "scp")
@@ -325,6 +387,24 @@ def scp_remote_host(operand: str) -> str | None:
     return host[1:-1] if host.startswith("[") and host.endswith("]") else host
 
 
+def sftp_remote_host(operand: str) -> str | None:
+    """Extract the host from an SFTP URI or ``[user@]host[:path]`` destination."""
+    uri_destination = uri_host(operand, "sftp")
+    if uri_destination is not None:
+        return uri_destination
+    if "://" in operand:
+        return None
+    if operand.startswith("["):
+        closing_bracket = operand.find("]")
+        if closing_bracket < 0:
+            return None
+        authority = operand[: closing_bracket + 1]
+    else:
+        authority = operand.partition(":")[0]
+    host = authority.rsplit("@", maxsplit=1)[-1]
+    return host[1:-1] if host.startswith("[") and host.endswith("]") else host
+
+
 def has_ssh_command_without_user(text: str) -> bool:
     """Reject username-less hostlike SSH destinations in shell command position."""
     normalized = text.replace("\\\n", " ")
@@ -335,10 +415,16 @@ def has_ssh_command_without_user(text: str) -> bool:
                 continue
             if not ssh_is_in_command_position(tokens, index):
                 continue
-            destination_result = ssh_destination(tokens, index)
-            if destination_result is None:
+            operands, option_arguments = parse_openssh_arguments(
+                tokens,
+                index,
+                SSH_OPTIONS_WITH_ARGUMENT,
+            )
+            if has_disallowed_option_endpoint(option_arguments):
+                return True
+            if not operands:
                 continue
-            destination, destination_index = destination_result
+            destination, destination_index = operands[0]
             if "@" in destination:
                 continue
             uri_destination = uri_host(destination, "ssh")
@@ -371,10 +457,54 @@ def has_scp_command_with_remote(text: str) -> bool:
                 continue
             if not ssh_is_in_command_position(tokens, index):
                 continue
-            for operand in command_operands(tokens, index, SCP_OPTIONS_WITH_ARGUMENT):
+            operands, option_arguments = parse_openssh_arguments(
+                tokens,
+                index,
+                SCP_OPTIONS_WITH_ARGUMENT,
+            )
+            if has_disallowed_option_endpoint(option_arguments):
+                return True
+            for operand, _ in operands:
                 host = scp_remote_host(operand)
                 if host is not None and remote_host_is_disallowed(host):
                     return True
+    return False
+
+
+def has_sftp_command_with_remote(text: str) -> bool:
+    """Reject non-example endpoints in shell SFTP command position."""
+    normalized = text.replace("\\\n", " ")
+    for line in normalized.splitlines():
+        tokens = shell_tokens(line)
+        for index, token in enumerate(tokens):
+            if token.rsplit("/", maxsplit=1)[-1] != SFTP_COMMAND:
+                continue
+            if not ssh_is_in_command_position(tokens, index):
+                continue
+            operands, option_arguments = parse_openssh_arguments(
+                tokens,
+                index,
+                SFTP_OPTIONS_WITH_ARGUMENT,
+            )
+            if has_disallowed_option_endpoint(option_arguments):
+                return True
+            if not operands:
+                continue
+            destination, destination_index = operands[0]
+            host = sftp_remote_host(destination)
+            if host is None or not remote_host_is_disallowed(host):
+                continue
+            if HOSTLIKE_SSH_DESTINATION.fullmatch(host):
+                return True
+            if SINGLE_LABEL_SSH_DESTINATION.fullmatch(
+                host
+            ) and single_label_destination_is_unambiguous(
+                tokens,
+                index,
+                destination_index,
+                SFTP_COMMAND,
+            ):
+                return True
     return False
 
 
@@ -425,13 +555,19 @@ def read_index_text(repo_dir: Path, relative_path: Path) -> str | None:
 
 def metadata_categories(text: str) -> list[str]:
     categories = [category for category, pattern in PATTERNS.items() if pattern.search(text)]
+    allowed_refs = allowed_reference_spans(text)
     if (
-        has_disallowed_user_at_host_identifier(text)
+        has_disallowed_user_at_host_identifier(text, allowed_refs)
         or has_ssh_command_without_user(text)
         or has_scp_command_with_remote(text)
+        or has_sftp_command_with_remote(text)
     ):
         categories.append("direct SSH machine endpoint")
-    contacts = {match.group(0).lower() for match in EMAIL_PATTERN.finditer(text)}
+    contacts = {
+        match.group(0).lower()
+        for match in EMAIL_PATTERN.finditer(text)
+        if not is_within_allowed_reference(match, allowed_refs)
+    }
     if any(
         not contact.endswith("@example.com") and contact not in ALLOWED_CONTACTS
         for contact in contacts
