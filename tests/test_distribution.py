@@ -90,7 +90,9 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"true; {remote_command} private-host",
         f'{remote_command} "private-host"',
         f"{remote_command} -i identity -p 2222 private-host",
+        f"{remote_command} -vvF /dev/null private-host",
         f"{remote_command} -o 'ProxyCommand=nc %h %p; true' private-host",
+        f"sudo -u root {remote_command} private-host",
         f"{remote_command} private-host echo actions/checkout@v4",
     ):
         assert "direct SSH machine endpoint" in categories(text)

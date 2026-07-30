@@ -141,21 +141,29 @@ def ssh_destination(tokens: list[str], command_index: int) -> str | None:
             return tokens[index] if index < len(tokens) else None
         if not token.startswith("-") or token == "-":
             return token
-        option = token[1:2]
-        if len(token) == 2 and option in SSH_OPTIONS_WITH_ARGUMENT:
-            index += 1
+        option_cluster = token[1:]
+        for option_index, option in enumerate(option_cluster):
+            if option not in SSH_OPTIONS_WITH_ARGUMENT:
+                continue
+            if option_index == len(option_cluster) - 1:
+                index += 1
+            break
         index += 1
     return None
 
 
 def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
     """Recognize shell prefixes without mistaking ordinary prose for a command."""
-    index = command_index - 1
-    while index >= 0 and (
-        tokens[index] in SSH_COMMAND_WRAPPERS or SHELL_ASSIGNMENT.fullmatch(tokens[index])
-    ):
-        index -= 1
-    return index < 0 or tokens[index] in SSH_COMMAND_PREDECESSORS
+    start = command_index - 1
+    while start >= 0 and tokens[start] not in SSH_COMMAND_PREDECESSORS:
+        start -= 1
+    prefix = tokens[start + 1 : command_index]
+    if not prefix:
+        return True
+    index = 0
+    while index < len(prefix) and SHELL_ASSIGNMENT.fullmatch(prefix[index]):
+        index += 1
+    return index == len(prefix) or prefix[index] in SSH_COMMAND_WRAPPERS
 
 
 def has_ssh_command_without_user(text: str) -> bool:
