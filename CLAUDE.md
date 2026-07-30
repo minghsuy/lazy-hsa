@@ -144,9 +144,10 @@ The `Is Authoritative` column in the master spreadsheet controls which records c
 ### Scripts (deterministic — prefer over re-deriving from prose)
 - `scripts/verify.sh` — ruff check + format check + pytest. Run before any commit/PR.
 - `scripts/verify-dist.sh` — build wheel/sdist, validate metadata + lock consistency, and smoke-test a clean installed wheel.
-- `scripts/release.sh check|prepare|attest <version>` — validates, locally
-  prepares, or attests an exact merged public release candidate; it never
-  pushes, tags, or publishes.
+- `scripts/release.sh check|prepare <version>` and
+  `scripts/release.sh attest <version> <merge-commit>` — validate, locally
+  prepare, or attest an exact merged public release candidate; they never push,
+  tag, or publish.
 
 ### Running with Poppler (for PDF processing)
 ```bash

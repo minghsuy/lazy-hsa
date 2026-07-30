@@ -10,14 +10,15 @@ usage() {
 usage:
   scripts/release.sh check VERSION
   scripts/release.sh prepare VERSION
-  scripts/release.sh attest VERSION
+  scripts/release.sh attest VERSION MERGE_COMMIT
 
 check    Validate the current public main and proposed version without writes.
 prepare Create a local release/vVERSION branch, update the version, lockfile,
         and changelog, verify the candidate commit, and build candidate
         artifacts. It does not push, tag, or create a GitHub release.
-attest   On the exact merged public main, recheck the complete lockfile and
-        build the retained, smoke-tested release artifacts and hashes.
+attest   On the expected merged public main commit, recheck unpublished state
+        and the complete lockfile, then build retained, smoke-tested release
+        artifacts and hashes.
 EOF
 }
 
@@ -95,6 +96,17 @@ if match is None or not match.group("body").strip():
 PY
 }
 
+require_unpublished_version() {
+  local version="$1"
+  [[ -z "$(git ls-remote --tags origin "refs/tags/v$version")" ]] ||
+    die "remote tag v$version already exists"
+  ! git rev-parse --verify "refs/tags/v$version" >/dev/null 2>&1 ||
+    die "local tag v$version already exists"
+  [[ "$(gh release list --repo minghsuy/lazy-hsa --limit 1000 \
+    --json tagName --jq "any(.[]; .tagName == \"v$version\")")" == "false" ]] ||
+    die "GitHub release v$version already exists"
+}
+
 preflight() {
   local version="$1"
   require_semver "$version"
@@ -108,13 +120,7 @@ preflight() {
   uv lock --check
   require_newer_version "$version"
   require_nonempty_changelog
-  [[ -z "$(git ls-remote --tags origin "refs/tags/v$version")" ]] ||
-    die "remote tag v$version already exists"
-  ! git rev-parse --verify "refs/tags/v$version" >/dev/null 2>&1 ||
-    die "local tag v$version already exists"
-  [[ "$(gh release list --repo minghsuy/lazy-hsa --limit 1000 \
-    --json tagName --jq "any(.[]; .tagName == \"v$version\")")" == "false" ]] ||
-    die "GitHub release v$version already exists"
+  require_unpublished_version "$version"
 }
 
 bump_changelog() {
@@ -172,28 +178,34 @@ prepare() {
   echo "prepared v$version at $commit"
   echo "candidate artifacts: $artifact_dir"
   echo "next: push the branch and open a PR for independent review"
-  echo "after merge, run: scripts/release.sh attest $version"
+  echo "after merge, run: scripts/release.sh attest $version MERGE_COMMIT"
   echo "nothing was tagged or published"
 }
 
 attest() {
   local version="$1"
+  local expected_commit="$2"
   require_semver "$version"
+  [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] ||
+    die "MERGE_COMMIT must be a full 40-character commit SHA"
   [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty"
   [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] ||
     die "must attest from main"
   git fetch origin main
-  [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] ||
-    die "local main is not the exact public remote head"
+  [[ "$(git rev-parse HEAD)" == "$expected_commit" ]] ||
+    die "HEAD is not the expected release PR merge commit"
+  [[ "$(git rev-parse origin/main)" == "$expected_commit" ]] ||
+    die "public remote main is not the expected release PR merge commit"
   require_versions_match
   [[ "$(project_version pyproject.toml)" == "$version" ]] ||
     die "project version does not match v$version"
   uv lock --check
+  require_unpublished_version "$version"
 
   scripts/verify.sh --verbose
 
   local commit artifact_dir
-  commit="$(git rev-parse HEAD)"
+  commit="$expected_commit"
   artifact_dir="$REPO_DIR/dist/release-v$version"
   mkdir -p "$artifact_dir"
   [[ -z "$(find "$artifact_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
@@ -224,8 +236,8 @@ case "${1:-}" in
     prepare "$2"
     ;;
   attest)
-    [[ $# == 2 ]] || { usage >&2; exit 2; }
-    attest "$2"
+    [[ $# == 3 ]] || { usage >&2; exit 2; }
+    attest "$2" "$3"
     ;;
   *)
     usage >&2
