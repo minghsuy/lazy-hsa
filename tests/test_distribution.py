@@ -67,6 +67,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     unix_home_path = "/" + "home"
     users_path = "/" + "Users"
     windows_users_path = "C:" + users_path
+    checkout_action = "actions/checkout" + "@v4"
     for text in (
         f"{remote_command} -i identity -p 2222 {private_endpoint}",
         f"{remote_command} -i identity \\\n  {private_endpoint}",
@@ -81,7 +82,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} 192.168.1.20",
         f"{remote_command} private-host # contact user@example.com",
         f"{remote_command} private-host echo user@example.com",
-        f"{remote_command} private-host # uses actions/checkout@v4",
+        f"{remote_command} private-host # uses {checkout_action}",
         f"{remote_command} prod uptime",
         f"{remote_command} backuphost is",
         remote_command + " owner/user" + "@private-host",
@@ -175,7 +176,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"Documentation ({ssh_uri}[fd00::1]:2222/private/path).",
         f"Endpoint: {ssh_uri.upper()}private-host/private/path",
         f"sudo -u root {remote_command} private-host",
-        f"{remote_command} private-host echo actions/checkout@v4",
+        f"{remote_command} private-host echo {checkout_action}",
         f"{copy_command} private-host:/private/file .",
         f"{copy_command} local-file private-host:/private/file",
         f"{copy_command} -F /dev/null private-host:/private/file .",
@@ -220,6 +221,11 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"/usr/bin/{sync_command} -av ./source private-host:/private/path",
         f"sudo -u root {sync_command} -e {remote_command} private-host:/private/path ./destination",
         f"env VAR=x {sync_command} --port 873 {rsync_uri}private-host/module ./destination",
+        f"{sync_command} -e '{remote_command} -J private-jump' ./source example.com:/destination",
+        f"{sync_command} --rsh='{remote_command} -o HostName=private-host' "
+        "./source example.com:/destination",
+        f"{sync_command} -e '{remote_command} -oProxyJump=private-jump' "
+        "./source example.com:/destination",
         f"timeout 10 {sync_command} private-host:/private/path ./destination",
         f"nohup {sync_command} ./source private-host:/private/path",
         f"env -S 'sudo {shell_command} -c "
@@ -248,6 +254,11 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         "LocalForward 8080 private-host:80",
         f"{local_forward}=8080:private-host:80",
         "RemoteForward [::1]:8080 [fd00::2]:80",
+        f"run: {remote_command} prod uptime",
+        f'run: "{remote_command} private-host"',
+        f"command: {copy_command} private-host:/private/file .",
+        f"entrypoint: {transfer_command} private-host:/private/path",
+        f"script: {sync_command} private-host:/private/path ./destination",
     ):
         assert "direct SSH machine endpoint" in categories(text)
     for prose in (
@@ -346,6 +357,10 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{sync_command} -fprivate-host:/pattern ./source ./destination",
         f"{sync_command} --rsh private-host:/binary ./source ./destination",
         f"{sync_command} --rsync-path private-host:/binary ./source ./destination",
+        f"{sync_command} -e '{remote_command} -J example.com' ./source example.com:/destination",
+        f"{sync_command} --rsh='{remote_command} -o HostName=example.com' "
+        "./source example.com:/destination",
+        f"{sync_command} --rsh private-host:/binary ./source ./destination",
         f"timeout 10 {sync_command} example.com:/path ./destination",
         f"nohup {sync_command} ./source example.com:/path",
         f"Use retry-wrapper {sync_command} private-host:/path for synchronization.",
@@ -368,6 +383,16 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         "# HostName private-host",
         "Describe HostName private-host in prose.",
         "setting: ProxyJump private-jump",
+        f"run: {remote_command} example.com",
+        f"command: {copy_command} example.com:/private/file .",
+        f"entrypoint: {transfer_command} example.com:/private/path",
+        f"script: {sync_command} example.com:/path ./destination",
+        f"description: {remote_command} private-host",
+        f"runbook: {remote_command} private-host",
+        f"Example run: {remote_command} private-host",
+        f"run: echo {remote_command} private-host",
+        f"run: [{remote_command}, private-host]",
+        f"run: | {remote_command} private-host",
     ):
         assert "direct SSH machine endpoint" not in categories(prose)
     assert "direct SSH machine endpoint" not in categories("contact user@example.com")
@@ -386,7 +411,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     assert "direct SSH machine endpoint" not in categories("npm install --save package@latest")
     assert "direct SSH machine endpoint" not in categories("npm install package@2.1.0")
     assert "direct SSH machine endpoint" not in categories(
-        "npm install " + "@scope/package@private-tag"
+        "npm install " + "@" + "scope/package" + "@private-tag"
     )
     assert "direct SSH machine endpoint" not in categories(
         "image: alpine" + "@sha256:" + ("a" * 64)
@@ -400,6 +425,12 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     assert "non-example email address" in categories(
         "uses: owner/action@release.dev; contact person" + "@private.test"
     )
+    for ordinary_contact in (
+        "https://intranet.example/users/person" + "@company.com",
+        "/srv/users/person" + "@company.com",
+        "https://github.example/owner/action" + "@release.dev",
+    ):
+        assert "non-example email address" in categories(ordinary_contact)
     assert "direct SSH machine endpoint" in categories(
         remote_command + " build-action" + "@private-host"
     )

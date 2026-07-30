@@ -123,6 +123,7 @@ NETCAT_OPTIONS_WITH_ARGUMENT = set("ceIiMmOPpqsTVwXx")
 SHELL_COMMANDS = {"bash", "dash", "ksh", "sh", "zsh"}
 SHELL_OPTIONS_WITH_ARGUMENT = {"c", "O", "o"}
 SHELL_LONG_OPTIONS_WITH_ARGUMENT = {"init-file", "rcfile"}
+INLINE_YAML_COMMAND = re.compile(r"^\s*(?:-\s*)?(?:run|command|entrypoint|script)\s*:\s*(.*?)\s*$")
 WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT = {
     "command": set(),
     "env": set("aCSu"),
@@ -158,15 +159,18 @@ HOSTLIKE_SSH_DESTINATION = re.compile(
 )
 SINGLE_LABEL_SSH_DESTINATION = re.compile(r"[A-Z0-9][A-Z0-9-]*", re.IGNORECASE)
 SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
-QUALIFIED_PACKAGE_REF = re.compile(
-    r"(?<![A-Z0-9_.-])"
-    r"[A-Z0-9_.-]+/[A-Z0-9_.-]+\x40[A-Z0-9._/-]+"
-    r"(?![A-Z0-9._/-])",
-    re.IGNORECASE,
-)
 CONTEXTUAL_PACKAGE_REFS = (
     re.compile(
+        r"`[A-Z0-9_.-]+/[A-Z0-9_.-]+\x40[A-Z0-9._/-]+`",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\buses:\s*[A-Z0-9_.-]+/[A-Z0-9_.-]+"
+        r"\x40[A-Z0-9._/-]+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bdependency:\s*[A-Z0-9_.-]+/[A-Z0-9_.-]+"
         r"\x40[A-Z0-9._/-]+",
         re.IGNORECASE,
     ),
@@ -177,6 +181,11 @@ CONTEXTUAL_PACKAGE_REFS = (
         r"[A-Z0-9_.-]+\x40(?:v?[0-9]+(?:\.[0-9]+)*(?:[-+][A-Z0-9.-]+)?|"
         r"latest|next|beta|alpha|canary)"
         r")",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"https://cdn\.jsdelivr\.net/npm/"
+        r"(?:\x40[A-Z0-9_.-]+/)?[A-Z0-9_.-]+\x40[A-Z0-9._-]+",
         re.IGNORECASE,
     ),
     re.compile(
@@ -221,11 +230,9 @@ PUBLIC_GITHUB_SSH_CLONE = re.compile(
 
 def allowed_reference_spans(text: str) -> tuple[re.Match[str], ...]:
     """Return package, action, and image references that use ``@`` safely."""
-    return (
-        tuple(QUALIFIED_PACKAGE_REF.finditer(text))
-        + tuple(match for pattern in CONTEXTUAL_PACKAGE_REFS for match in pattern.finditer(text))
-        + tuple(PUBLIC_GITHUB_SSH_CLONE.finditer(text))
-    )
+    return tuple(
+        match for pattern in CONTEXTUAL_PACKAGE_REFS for match in pattern.finditer(text)
+    ) + tuple(PUBLIC_GITHUB_SSH_CLONE.finditer(text))
 
 
 def is_within_allowed_reference(
@@ -283,6 +290,20 @@ def config_tokens(line: str) -> list[str]:
         return list(lexer)
     except ValueError:
         return []
+
+
+def executable_line(line: str) -> str:
+    """Return an inline YAML command scalar or the original shell line."""
+    match = INLINE_YAML_COMMAND.fullmatch(line)
+    if match is None:
+        return line
+    value = match.group(1)
+    if not value or value.startswith(("|", ">", "[", "{")):
+        return ""
+    if value.startswith(("'", '"')):
+        tokens = config_tokens(value)
+        return tokens[0] if len(tokens) == 1 else ""
+    return value
 
 
 def parse_openssh_arguments(
@@ -471,6 +492,9 @@ def command_token_sequences(text: str):
             continue
         inspected.add(current)
         for line in current.replace("\\\n", " ").splitlines():
+            line = executable_line(line)
+            if not line:
+                continue
             tokens = shell_tokens(line)
             yield tokens
             for index, token in enumerate(tokens):
@@ -962,13 +986,20 @@ def has_rsync_command_with_remote(text: str) -> bool:
             in_command_position = ssh_is_in_command_position(tokens, index)
             if not in_command_position:
                 continue
-            operands, _ = parse_openssh_arguments(
+            operands, option_arguments = parse_openssh_arguments(
                 tokens,
                 index,
                 RSYNC_OPTIONS_WITH_ARGUMENT,
                 RSYNC_LONG_OPTIONS_WITH_ARGUMENT,
                 options_after_operands=True,
             )
+            if any(
+                remote_host_is_disallowed(host)
+                for option, argument in option_arguments
+                if option in {"e", "rsh"}
+                for host in proxy_command_hosts(argument)
+            ):
+                return True
             for operand, _ in operands:
                 host = rsync_remote_host(operand)
                 if host is not None and remote_host_is_disallowed(host):
