@@ -47,11 +47,12 @@ def test_public_tree_has_no_environment_metadata():
 
 
 def test_public_metadata_guard_handles_ssh_options_and_contacts():
-    """Every disallowed user-at-host token is caught without shell parsing."""
+    """User-at-host identifiers and shell SSH destinations cannot bypass the guard."""
     namespace = runpy.run_path(str(REPO_DIR / "scripts" / "check-public-metadata.py"))
     categories = namespace["metadata_categories"]
     private_endpoint = "user" + "@private-host"
     remote_command = "s" + "sh"
+    copy_command = "s" + "cp"
     for text in (
         f"{remote_command} -i identity -p 2222 {private_endpoint}",
         f"{remote_command} -i identity \\\n  {private_endpoint}",
@@ -67,6 +68,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} private-host # contact user@example.com",
         f"{remote_command} private-host echo user@example.com",
         f"{remote_command} private-host # uses actions/checkout@v4",
+        f"{remote_command} prod uptime",
         f"sudo {remote_command} private-host",
         f"command {remote_command} private-host",
         f"env {remote_command} private-host",
@@ -77,9 +79,15 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"/usr/bin/{remote_command} private-host",
         f"{remote_command} prod",
         f"sudo {remote_command} prod",
+        f"sudo -u root {remote_command} prod",
+        f"sudo --user=root {remote_command} prod",
         f"command {remote_command} prod",
+        f"command -p {remote_command} prod",
         f"env {remote_command} prod",
+        f"env -i VAR=x {remote_command} prod",
+        f"env --ignore-environment {remote_command} prod",
         f"exec {remote_command} prod",
+        f"exec -a remote-session {remote_command} prod",
         f"VAR=x {remote_command} prod",
         f"! {remote_command} prod",
         f"else {remote_command} prod",
@@ -91,18 +99,52 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f'{remote_command} "private-host"',
         f"{remote_command} -i identity -p 2222 private-host",
         f"{remote_command} -vvF /dev/null private-host",
+        f"{remote_command} -vvF/dev/null private-host",
+        f"{remote_command} -vv -F /dev/null -p 2222 private-host",
+        f"{remote_command} -p2222 private-host",
         f"{remote_command} -o 'ProxyCommand=nc %h %p; true' private-host",
+        f"{remote_command} ssh://private-host",
+        f"{remote_command} ssh://private-host:2222",
+        f"{remote_command} ssh://192.168.1.20",
+        f"{remote_command} ssh://[fd00::1]",
+        f"{remote_command} ssh://[fe80::1%25eth0]",
+        f"sudo -u root {remote_command} -F /dev/null ssh://private-host",
         f"sudo -u root {remote_command} private-host",
         f"{remote_command} private-host echo actions/checkout@v4",
+        f"{copy_command} private-host:/private/file .",
+        f"{copy_command} local-file private-host:/private/file",
+        f"{copy_command} -F /dev/null private-host:/private/file .",
+        f"sudo -u root {copy_command} -P 2222 local-file private-host:/private/file",
+        f"{copy_command} 192.168.1.20:/private/file .",
+        f"{copy_command} [fd00::1]:/private/file .",
+        f"{copy_command} scp://private-host/private/file .",
+        f"{copy_command} scp://[fd00::1]/private/file .",
+        f"{copy_command} scp://[fe80::1%25eth0]/private/file .",
+        f"{copy_command} user" + "@private-host:/private/file .",
     ):
         assert "direct SSH machine endpoint" in categories(text)
     for prose in (
         f"Use {remote_command} for remote access.",
         f"The {remote_command} client-server protocol supports remote access.",
+        f"{remote_command} access is required for deployment.",
+        f"{remote_command} config lives in the user profile.",
         f"Run {remote_command} -V to show the version.",
         f"{remote_command} -V",
+        f"Use {remote_command} ssh://private-host for remote access.",
+        f"sudo -u {remote_command} private-host",
+        f"sudo --user {remote_command} private-host",
+        f"env -u {remote_command} private-host",
+        f"exec -a {remote_command} private-host",
         f"{remote_command} example.com",
         f"{remote_command} host.example.com",
+        f"{remote_command} ssh://example.com",
+        f"{remote_command} ssh://host.example.com",
+        f"Use {copy_command} private-host:/private/file for copying.",
+        f"{copy_command} local-file ./destination",
+        f"{copy_command} example.com:/private/file .",
+        f"{copy_command} host.example.com:/private/file .",
+        f"{copy_command} scp://example.com/private/file .",
+        f"{copy_command} user@example.com:/private/file .",
     ):
         assert "direct SSH machine endpoint" not in categories(prose)
     assert "direct SSH machine endpoint" not in categories("contact user@example.com")

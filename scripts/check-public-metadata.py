@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 PUBLIC_REPOSITORY = "minghsuy/lazy-hsa"
@@ -25,6 +26,7 @@ USER_AT_HOST_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SSH_COMMAND = "\x73\x73\x68"
+SCP_COMMAND = "\x73\x63\x70"
 SSH_COMMAND_PREDECESSORS = {
     "$",
     "!",
@@ -43,16 +45,42 @@ SSH_COMMAND_PREDECESSORS = {
 }
 SSH_COMMAND_WRAPPERS = {"command", "env", "exec", "sudo"}
 SSH_OPTIONS_WITH_ARGUMENT = set("BbcDEeFIiJLlmOoPpQRSWw")
+SCP_OPTIONS_WITH_ARGUMENT = set("cDFiJloPSX")
+WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT = {
+    "command": set(),
+    "env": set("aCSu"),
+    "exec": {"a"},
+    "sudo": set("CDghpRrTtUu"),
+}
+WRAPPER_LONG_OPTIONS_WITH_ARGUMENT = {
+    "command": set(),
+    "env": {"argv0", "chdir", "split-string", "unset"},
+    "exec": set(),
+    "sudo": {
+        "chdir",
+        "close-from",
+        "group",
+        "host",
+        "other-user",
+        "prompt",
+        "role",
+        "root",
+        "timeout",
+        "type",
+        "user",
+    },
+}
 HOSTLIKE_SSH_DESTINATION = re.compile(
     r"(?:"
     r"\[[0-9A-F:.%_-]+\]|"
     r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}|"
-    r"[0-9A-F]*:[0-9A-F:]+|"
+    r"[0-9A-F]*:[0-9A-F:]+(?:%[A-Z0-9._-]+)?|"
     r"[A-Z0-9][A-Z0-9._-]*[._-][A-Z0-9._-]+"
     r")",
     re.IGNORECASE,
 )
 SINGLE_LABEL_SSH_DESTINATION = re.compile(r"[A-Z0-9][A-Z0-9-]*", re.IGNORECASE)
+SINGLE_LABEL_PROSE_CONTINUATIONS = {"are", "is", "lives", "was", "were"}
 SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 QUALIFIED_PACKAGE_REF = re.compile(
     r"(?<![A-Z0-9_.-])"
@@ -129,8 +157,8 @@ def shell_tokens(line: str) -> list[str]:
         return re.findall(r"&&|\|\||[;&|()]|[^\s;&|()]+", line)
 
 
-def ssh_destination(tokens: list[str], command_index: int) -> str | None:
-    """Return the destination token after OpenSSH options, if present."""
+def ssh_destination(tokens: list[str], command_index: int) -> tuple[str, int] | None:
+    """Return the destination token and its index after OpenSSH options."""
     index = command_index + 1
     while index < len(tokens):
         token = tokens[index]
@@ -138,9 +166,9 @@ def ssh_destination(tokens: list[str], command_index: int) -> str | None:
             return None
         if token == "--":
             index += 1
-            return tokens[index] if index < len(tokens) else None
+            return (tokens[index], index) if index < len(tokens) else None
         if not token.startswith("-") or token == "-":
-            return token
+            return token, index
         option_cluster = token[1:]
         for option_index, option in enumerate(option_cluster):
             if option not in SSH_OPTIONS_WITH_ARGUMENT:
@@ -150,6 +178,69 @@ def ssh_destination(tokens: list[str], command_index: int) -> str | None:
             break
         index += 1
     return None
+
+
+def command_operands(
+    tokens: list[str],
+    command_index: int,
+    options_with_argument: set[str],
+) -> list[str]:
+    """Return command operands after consuming short options and their arguments."""
+    operands: list[str] = []
+    index = command_index + 1
+    options_enabled = True
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {";", "&&", "||", "|", "(", ")"}:
+            break
+        if options_enabled and token == "--":
+            options_enabled = False
+            index += 1
+            continue
+        if options_enabled and token.startswith("-") and token != "-":
+            option_cluster = token[1:]
+            for option_index, option in enumerate(option_cluster):
+                if option not in options_with_argument:
+                    continue
+                if option_index == len(option_cluster) - 1:
+                    index += 1
+                break
+            index += 1
+            continue
+        options_enabled = False
+        operands.append(token)
+        index += 1
+    return operands
+
+
+def consume_wrapper_options(prefix: list[str], index: int, wrapper: str) -> int | None:
+    """Consume one wrapper's options and their separate operands."""
+    index += 1
+    while index < len(prefix):
+        token = prefix[index]
+        if token == "--":
+            return index + 1
+        if not token.startswith("-") or token == "-":
+            return index
+        if token.startswith("--"):
+            name, separator, _ = token[2:].partition("=")
+            if not separator and name in WRAPPER_LONG_OPTIONS_WITH_ARGUMENT[wrapper]:
+                if index + 1 >= len(prefix):
+                    return None
+                index += 1
+            index += 1
+            continue
+        option_cluster = token[1:]
+        for option_index, option in enumerate(option_cluster):
+            if option not in WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT[wrapper]:
+                continue
+            if option_index == len(option_cluster) - 1:
+                if index + 1 >= len(prefix):
+                    return None
+                index += 1
+            break
+        index += 1
+    return index
 
 
 def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
@@ -163,7 +254,76 @@ def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
     index = 0
     while index < len(prefix) and SHELL_ASSIGNMENT.fullmatch(prefix[index]):
         index += 1
-    return index == len(prefix) or prefix[index] in SSH_COMMAND_WRAPPERS
+    while index < len(prefix):
+        wrapper = prefix[index].rsplit("/", maxsplit=1)[-1]
+        if wrapper not in SSH_COMMAND_WRAPPERS:
+            return False
+        next_index = consume_wrapper_options(prefix, index, wrapper)
+        if next_index is None:
+            return False
+        index = next_index
+        while index < len(prefix) and SHELL_ASSIGNMENT.fullmatch(prefix[index]):
+            index += 1
+    return True
+
+
+def single_label_destination_is_unambiguous(
+    tokens: list[str],
+    command_index: int,
+    destination_index: int,
+) -> bool:
+    """Avoid treating a sentence beginning with ``ssh <noun>`` as a command."""
+    trailing = tokens[destination_index + 1 :]
+    if not trailing or trailing[0] in {"#", ";", "&&", "||", "|", "(", ")"}:
+        return True
+    if (
+        command_index > 0
+        or tokens[command_index] != SSH_COMMAND
+        or destination_index > command_index + 1
+    ):
+        return True
+    return trailing[0].lower() not in SINGLE_LABEL_PROSE_CONTINUATIONS
+
+
+def uri_host(destination: str, scheme: str) -> str | None:
+    """Return a URI hostname for the expected scheme."""
+    try:
+        parsed = urlsplit(destination)
+        if parsed.scheme.lower() != scheme or not parsed.hostname:
+            return None
+        return parsed.hostname
+    except ValueError:
+        return None
+
+
+def remote_host_is_disallowed(host: str) -> bool:
+    """Return whether an explicit remote host is non-example and hostlike."""
+    normalized = host.lower().rstrip(".")
+    if normalized == "example.com" or normalized.endswith(".example.com"):
+        return False
+    return bool(
+        HOSTLIKE_SSH_DESTINATION.fullmatch(host) or SINGLE_LABEL_SSH_DESTINATION.fullmatch(host)
+    )
+
+
+def scp_remote_host(operand: str) -> str | None:
+    """Extract the host from an SCP URI or legacy ``host:path`` operand."""
+    uri_destination = uri_host(operand, "scp")
+    if uri_destination is not None:
+        return uri_destination
+    if "://" in operand:
+        return None
+    if operand.startswith("["):
+        closing_bracket = operand.find("]")
+        if closing_bracket < 0 or operand[closing_bracket + 1 : closing_bracket + 2] != ":":
+            return None
+        authority = operand[: closing_bracket + 1]
+    else:
+        authority, separator, _ = operand.partition(":")
+        if not separator:
+            return None
+    host = authority.rsplit("@", maxsplit=1)[-1]
+    return host[1:-1] if host.startswith("[") and host.endswith("]") else host
 
 
 def has_ssh_command_without_user(text: str) -> bool:
@@ -176,18 +336,46 @@ def has_ssh_command_without_user(text: str) -> bool:
                 continue
             if not ssh_is_in_command_position(tokens, index):
                 continue
-            destination = ssh_destination(tokens, index)
-            if not destination or "@" in destination:
+            destination_result = ssh_destination(tokens, index)
+            if destination_result is None:
                 continue
-            normalized_destination = destination.lower().rstrip(".")
-            if normalized_destination == "example.com" or normalized_destination.endswith(
-                ".example.com"
-            ):
+            destination, destination_index = destination_result
+            if "@" in destination:
                 continue
-            if HOSTLIKE_SSH_DESTINATION.fullmatch(
-                destination
-            ) or SINGLE_LABEL_SSH_DESTINATION.fullmatch(destination):
+            uri_destination = uri_host(destination, "ssh")
+            if uri_destination is not None:
+                if remote_host_is_disallowed(uri_destination):
+                    return True
+                continue
+            if not remote_host_is_disallowed(destination):
+                continue
+            if HOSTLIKE_SSH_DESTINATION.fullmatch(destination):
                 return True
+            if SINGLE_LABEL_SSH_DESTINATION.fullmatch(
+                destination
+            ) and single_label_destination_is_unambiguous(
+                tokens,
+                index,
+                destination_index,
+            ):
+                return True
+    return False
+
+
+def has_scp_command_with_remote(text: str) -> bool:
+    """Reject non-example remote operands in shell SCP command position."""
+    normalized = text.replace("\\\n", " ")
+    for line in normalized.splitlines():
+        tokens = shell_tokens(line)
+        for index, token in enumerate(tokens):
+            if token.rsplit("/", maxsplit=1)[-1] != SCP_COMMAND:
+                continue
+            if not ssh_is_in_command_position(tokens, index):
+                continue
+            for operand in command_operands(tokens, index, SCP_OPTIONS_WITH_ARGUMENT):
+                host = scp_remote_host(operand)
+                if host is not None and remote_host_is_disallowed(host):
+                    return True
     return False
 
 
@@ -238,7 +426,11 @@ def read_index_text(repo_dir: Path, relative_path: Path) -> str | None:
 
 def metadata_categories(text: str) -> list[str]:
     categories = [category for category, pattern in PATTERNS.items() if pattern.search(text)]
-    if has_disallowed_user_at_host_identifier(text) or has_ssh_command_without_user(text):
+    if (
+        has_disallowed_user_at_host_identifier(text)
+        or has_ssh_command_without_user(text)
+        or has_scp_command_with_remote(text)
+    ):
         categories.append("direct SSH machine endpoint")
     contacts = {match.group(0).lower() for match in EMAIL_PATTERN.finditer(text)}
     if any(
