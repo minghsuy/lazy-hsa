@@ -171,4 +171,4 @@ backup:
   enabled: false
   # local_path: "/path/to/backup"
   # Or use rsync to NAS
-  # rsync_target: "user@nas:/backup/hsa-receipts"
+  # rsync_target: "user@example.com:/backup/hsa-receipts"

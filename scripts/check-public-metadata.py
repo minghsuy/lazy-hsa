@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import re
-import shlex
 import subprocess
 from pathlib import Path
 
@@ -18,6 +17,11 @@ EMAIL_PATTERN = re.compile(
     r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
     re.IGNORECASE,
 )
+USER_AT_HOST_PATTERN = re.compile(
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\b",
+    re.IGNORECASE,
+)
+PACKAGE_VERSION_REF = re.compile(r"v?[0-9]+")
 
 PATTERNS = {
     "absolute user-home path": re.compile(r"(?:/Users|/home)/[A-Za-z0-9._-]+/"),
@@ -26,38 +30,22 @@ PATTERNS = {
         r"(?!lazy-hsa(?:\.git)?(?=$|[^A-Za-z0-9_.-]))[A-Za-z0-9_.-]+",
     ),
 }
-SSH_DESTINATION = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+")
-SSH_COMMAND = re.compile(r"(?m)(?:^[ \t]*|[;&|][ \t]*|\$[ \t]+)ssh(?=[ \t])")
-SSH_OPTIONS_WITH_ARGUMENT = set("bcDEeFIiJLlmOo pQRSWw".replace(" ", ""))
 
 
-def has_direct_ssh_endpoint(text: str) -> bool:
-    """Return whether text contains a shell SSH command with a user@host target."""
-    normalized = re.sub(r"\\\r?\n[ \t]*", " ", text)
-    for match in SSH_COMMAND.finditer(normalized):
-        ssh_start = match.end() - len("ssh")
-        command = re.split(r"[;&|\n]", normalized[ssh_start:], maxsplit=1)[0]
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
+def has_disallowed_user_at_host_identifier(text: str) -> bool:
+    """Reject user-at-host identifiers without attempting to parse shell syntax."""
+    for match in USER_AT_HOST_PATTERN.finditer(text):
+        identifier = match.group(0).lower()
+        local, host = identifier.rsplit("@", maxsplit=1)
+        if identifier.endswith("@example.com") or identifier in ALLOWED_CONTACTS:
             continue
-        if not tokens or tokens[0] != "ssh":
+        # Slash-qualified package version refs and action-name version refs are
+        # not user-at-host identifiers.
+        if PACKAGE_VERSION_REF.fullmatch(host) and (
+            (match.start() > 0 and text[match.start() - 1] == "/") or local.endswith("-action")
+        ):
             continue
-        index = 1
-        while index < len(tokens):
-            token = tokens[index]
-            if token == "--":
-                index += 1
-                break
-            if not token.startswith("-") or token == "-":
-                break
-            option = token[1:2]
-            if option in SSH_OPTIONS_WITH_ARGUMENT and len(token) == 2:
-                index += 2
-            else:
-                index += 1
-        if index < len(tokens) and SSH_DESTINATION.fullmatch(tokens[index]):
-            return True
+        return True
     return False
 
 
@@ -76,10 +64,8 @@ def tracked_files() -> list[Path]:
 
 
 def metadata_categories(text: str) -> list[str]:
-    categories = [
-        category for category, pattern in PATTERNS.items() if pattern.search(text)
-    ]
-    if has_direct_ssh_endpoint(text):
+    categories = [category for category, pattern in PATTERNS.items() if pattern.search(text)]
+    if has_disallowed_user_at_host_identifier(text):
         categories.append("direct SSH machine endpoint")
     contacts = {match.group(0).lower() for match in EMAIL_PATTERN.finditer(text)}
     if any(
@@ -98,9 +84,7 @@ def violations() -> list[tuple[str, Path]]:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        found.extend(
-            (category, relative_path) for category in metadata_categories(text)
-        )
+        found.extend((category, relative_path) for category in metadata_categories(text))
     return found
 
 

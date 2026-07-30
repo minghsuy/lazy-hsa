@@ -47,18 +47,25 @@ def test_public_tree_has_no_environment_metadata():
 
 
 def test_public_metadata_guard_handles_ssh_options_and_contacts():
-    """Option-bearing SSH commands and contacts cannot bypass the guard."""
+    """Every disallowed user-at-host token is caught without shell parsing."""
     namespace = runpy.run_path(str(REPO_DIR / "scripts" / "check-public-metadata.py"))
     categories = namespace["metadata_categories"]
-    assert "direct SSH machine endpoint" in categories(
-        "ssh -i identity -p 2222 user" + "@private-host"
-    )
-    assert "direct SSH machine endpoint" in categories(
-        "ssh -i identity \\\n  user" + "@private-host"
-    )
-    assert "direct SSH machine endpoint" not in categories(
-        "For SSH support, contact user@example.com."
-    )
+    private_endpoint = "user" + "@private-host"
+    for text in (
+        f"ssh -i identity -p 2222 {private_endpoint}",
+        f"ssh -i identity \\\n  {private_endpoint}",
+        f"ssh -B eth0 {private_endpoint}",
+        f"ssh -o 'ProxyCommand=nc %h %p; true' {private_endpoint}",
+        f"if ssh {private_endpoint}; then true; fi",
+        f"result=$(ssh {private_endpoint})",
+    ):
+        assert "direct SSH machine endpoint" in categories(text)
+    assert "direct SSH machine endpoint" not in categories("contact user@example.com")
+    assert "direct SSH machine endpoint" not in categories("from:auto-confirm@amazon.com")
+    assert "direct SSH machine endpoint" not in categories("uses: actions/checkout@v4")
+    assert "direct SSH machine endpoint" not in categories("dependency: npm/pico@2")
+    assert "direct SSH machine endpoint" not in categories("claude-code-action@v1")
+    assert "direct SSH machine endpoint" in categories("ssh user" + "@v4")
     assert "non-example email address" in categories("contact person" + "@private.test")
     assert "non-example email address" not in categories("contact user@example.com")
     assert "non-example email address" not in categories("from:auto-confirm@amazon.com")
