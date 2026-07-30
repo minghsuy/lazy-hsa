@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -24,7 +25,9 @@ USER_AT_HOST_PATTERN = re.compile(
 PACKAGE_VERSION_REF = re.compile(r"v?[0-9]+")
 
 PATTERNS = {
-    "absolute user-home path": re.compile(r"(?:/Users|/home)/[A-Za-z0-9._-]+/"),
+    "absolute user-home path": re.compile(
+        r"(?:/Users|/home)/[A-Za-z0-9._-]+(?=/|$|[^A-Za-z0-9._-])"
+    ),
     "environment-specific GitHub repository": re.compile(
         r"github\.com/minghsuy/"
         r"(?!lazy-hsa(?:\.git)?(?=$|[^A-Za-z0-9_.-]))[A-Za-z0-9_.-]+",
@@ -63,6 +66,16 @@ def tracked_files() -> list[Path]:
     ]
 
 
+def read_tracked_text(path: Path) -> str | None:
+    """Read a tracked text blob, preserving a symlink's published target."""
+    try:
+        if path.is_symlink():
+            return os.readlink(path)
+        return path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return None
+
+
 def metadata_categories(text: str) -> list[str]:
     categories = [category for category, pattern in PATTERNS.items() if pattern.search(text)]
     if has_disallowed_user_at_host_identifier(text):
@@ -80,9 +93,8 @@ def violations() -> list[tuple[str, Path]]:
     found: list[tuple[str, Path]] = []
     for path in tracked_files():
         relative_path = path.relative_to(REPO_DIR)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        text = read_tracked_text(path)
+        if text is None:
             continue
         found.extend((category, relative_path) for category in metadata_categories(text))
     return found

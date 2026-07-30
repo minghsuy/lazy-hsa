@@ -46,7 +46,7 @@ def test_public_tree_has_no_environment_metadata():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_public_metadata_guard_handles_ssh_options_and_contacts():
+def test_public_metadata_guard_handles_ssh_options_and_contacts(tmp_path):
     """Every disallowed user-at-host token is caught without shell parsing."""
     namespace = runpy.run_path(str(REPO_DIR / "scripts" / "check-public-metadata.py"))
     categories = namespace["metadata_categories"]
@@ -56,6 +56,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"ssh -i identity \\\n  {private_endpoint}",
         f"ssh -B eth0 {private_endpoint}",
         f"ssh -o 'ProxyCommand=nc %h %p; true' {private_endpoint}",
+        "ssh -J jumpuser" + "@private-jump target",
         f"if ssh {private_endpoint}; then true; fi",
         f"result=$(ssh {private_endpoint})",
     ):
@@ -69,3 +70,11 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     assert "non-example email address" in categories("contact person" + "@private.test")
     assert "non-example email address" not in categories("contact user@example.com")
     assert "non-example email address" not in categories("from:auto-confirm@amazon.com")
+
+    for home in ("/home/" + "private-user", "/Users/" + "private-user"):
+        assert "absolute user-home path" in categories(home)
+
+    symlink = tmp_path / "published-link"
+    symlink.symlink_to("/home/" + "private-user/config")
+    read_tracked_text = namespace["read_tracked_text"]
+    assert "absolute user-home path" in categories(read_tracked_text(symlink))
