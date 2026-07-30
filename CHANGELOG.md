@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Clarified that the supported distribution is currently source-only; PyPI installation is not advertised until a verified publisher exists.
+
 ### Fixed
 - Restored `pillow-heif` as a runtime dependency so clean installations can process the documented HEIC/HEIF receipt formats. Distribution verification now checks wheel metadata and exercises the conversion path from an installed wheel.
 

@@ -1,7 +1,5 @@
 # lazy-hsa
 
-[![PyPI version](https://img.shields.io/pypi/v/lazy-hsa)](https://pypi.org/project/lazy-hsa/)
-[![Python versions](https://img.shields.io/pypi/pyversions/lazy-hsa)](https://pypi.org/project/lazy-hsa/)
 [![License](https://img.shields.io/github/license/minghsuy/lazy-hsa)](LICENSE)
 
 A privacy-first, local AI-powered HSA receipt organization system. Your medical data never leaves your machine.
@@ -35,14 +33,15 @@ This is the [Boglehead HSA strategy](https://www.bogleheads.org/wiki/Health_savi
 ### 1. Install
 
 ```bash
-# From PyPI
-pip install lazy-hsa
-
-# Or from source (for development)
 git clone https://github.com/minghsuy/lazy-hsa.git
 cd lazy-hsa
 uv sync
+uv run lazy-hsa --help
 ```
+
+Releases are currently source-only. PyPI and unsigned binary distributions are
+not supported. See [Distribution](docs/DISTRIBUTION.md) for the verified release
+contract.
 
 ### 2. Set Up Ollama
 
@@ -81,7 +80,7 @@ cp config/config.example.yaml config/config.yaml
 ### 5. Initialize
 
 ```bash
-lazy-hsa setup
+uv run lazy-hsa setup
 ```
 
 ## Usage
@@ -92,26 +91,26 @@ Drop files into the `_Inbox` folder in Google Drive, then:
 
 ```bash
 # Preview what would happen
-lazy-hsa inbox --dry-run
+uv run lazy-hsa inbox --dry-run
 
 # Process all files
-lazy-hsa inbox
+uv run lazy-hsa inbox
 
 # Continuous watch mode
-lazy-hsa inbox --watch
+uv run lazy-hsa inbox --watch
 ```
 
 ### Process a single file
 
 ```bash
-lazy-hsa process --file /path/to/receipt.pdf
-lazy-hsa process --file /path/to/receipt.pdf --patient Alice
+uv run lazy-hsa process --file /path/to/receipt.pdf
+uv run lazy-hsa process --file /path/to/receipt.pdf --patient Alice
 ```
 
 ### View summary
 
 ```bash
-lazy-hsa summary
+uv run lazy-hsa summary
 ```
 
 Output:

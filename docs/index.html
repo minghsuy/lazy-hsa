@@ -70,7 +70,9 @@
       <h1>lazy-hsa</h1>
       <p class="tagline">Pay medical bills now. Invest your HSA. Reimburse decades later.</p>
       <div class="install-block">
-        <pre><code>pip install lazy-hsa</code></pre>
+        <pre><code>git clone https://github.com/minghsuy/lazy-hsa.git
+cd lazy-hsa
+uv sync --frozen</code></pre>
       </div>
       <p>
         A local AI-powered CLI that scans receipts, extracts data with vision models,
@@ -121,19 +123,21 @@
     <section>
       <h2>Quick Start</h2>
 <pre><code># Install
-pip install lazy-hsa
+git clone https://github.com/minghsuy/lazy-hsa.git
+cd lazy-hsa
+uv sync --frozen
 
 # Set up Google API credentials and local AI
-lazy-hsa setup
+uv run lazy-hsa setup
 
 # Process files from your Drive inbox
-lazy-hsa inbox
+uv run lazy-hsa inbox
 
 # Or process a single file
-lazy-hsa process --file receipt.pdf
+uv run lazy-hsa process --file receipt.pdf
 
 # View reconciliation and reimbursement summary
-lazy-hsa reconcile --year 2025</code></pre>
+uv run lazy-hsa reconcile --year 2025</code></pre>
       <p>
         See the <a href="https://github.com/minghsuy/lazy-hsa#quick-start">full setup guide</a>
         for Google API configuration and Ollama installation.
@@ -159,13 +163,11 @@ lazy-hsa reconcile --year 2025</code></pre>
 
   <footer class="container">
     <div class="badges">
-      <a href="https://pypi.org/project/lazy-hsa/"><img src="https://img.shields.io/pypi/v/lazy-hsa" alt="PyPI version"></a>
-      <a href="https://pypi.org/project/lazy-hsa/"><img src="https://img.shields.io/pypi/pyversions/lazy-hsa" alt="Python versions"></a>
       <a href="https://github.com/minghsuy/lazy-hsa/blob/main/LICENSE"><img src="https://img.shields.io/github/license/minghsuy/lazy-hsa" alt="License"></a>
     </div>
     <p>
       <a href="https://github.com/minghsuy/lazy-hsa">GitHub</a> &middot;
-      <a href="https://pypi.org/project/lazy-hsa/">PyPI</a> &middot;
+      <a href="https://github.com/minghsuy/lazy-hsa/releases">Releases</a> &middot;
       <a href="https://github.com/minghsuy/lazy-hsa/wiki">Wiki</a> &middot;
       <a href="https://github.com/minghsuy/lazy-hsa/blob/main/CHANGELOG.md">Changelog</a>
     </p>
