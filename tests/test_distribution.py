@@ -54,6 +54,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     remote_command = "s" + "sh"
     copy_command = "s" + "cp"
     transfer_command = "s" + "ftp"
+    relay_command = "n" + "c"
     for text in (
         f"{remote_command} -i identity -p 2222 {private_endpoint}",
         f"{remote_command} -i identity \\\n  {private_endpoint}",
@@ -105,6 +106,18 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} -vv -F /dev/null -p 2222 private-host",
         f"{remote_command} -p2222 private-host",
         f"{remote_command} -o 'ProxyCommand=nc %h %p; true' private-host",
+        f"{remote_command} -o 'ProxyCommand={remote_command} -W %h:%p private-jump-host' "
+        "example.com",
+        f"{remote_command} -o 'ProxyCommand={relay_command} private-host 22' example.com",
+        f'{remote_command} "-oProxyCommand={relay_command} private-host 22" example.com',
+        f"{remote_command} -o 'ProxyCommand=exec {remote_command} -W %h:%p "
+        "private-jump-host' example.com",
+        f"{remote_command} -o 'ProxyCommand=env {relay_command} -w 5 private-host 22' example.com",
+        f"{remote_command} -o 'ProxyCommand={relay_command} -w5 private-host 22' example.com",
+        f"{remote_command} -o 'ProxyCommand={relay_command} -x private-proxy:8080 %h %p' "
+        "example.com",
+        f'{remote_command} -o "ProxyCommand={remote_command} -o '
+        f"'ProxyCommand={relay_command} private-host 22' example.com\" example.com",
         f"{remote_command} -J private-jump example.com",
         f"{remote_command} -Jprivate-jump example.com",
         f"{remote_command} -vvJ private-jump example.com",
@@ -174,6 +187,15 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} -o ProxyJump=example.com example.com",
         f"{remote_command} -o ProxyJump=none example.com",
         f"{remote_command} -o HostName=example.com example.com",
+        f"{remote_command} -o 'ProxyCommand={remote_command} -W %h:%p example.com' example.com",
+        f"{remote_command} -o 'ProxyCommand={relay_command} %h %p' example.com",
+        f"{remote_command} -o 'ProxyCommand={relay_command} -w 5 %h %p' example.com",
+        f"{remote_command} -o 'ProxyCommand={relay_command} example.com 22' example.com",
+        f"{remote_command} -o 'ProxyCommand={relay_command} -x example.com:8080 %h %p' example.com",
+        f'{remote_command} -o "ProxyCommand={remote_command} -o '
+        f"'ProxyCommand={relay_command} example.com 22' example.com\" example.com",
+        f'{remote_command} "-oProxyCommand={relay_command} example.com 22" example.com',
+        f"{remote_command} -o ProxyCommand=none example.com",
         f"Use {copy_command} private-host:/private/file for copying.",
         f"{copy_command} local-file ./destination",
         f"{copy_command} example.com:/private/file .",

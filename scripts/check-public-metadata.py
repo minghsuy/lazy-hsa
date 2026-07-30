@@ -49,6 +49,8 @@ SSH_OPTIONS_WITH_ARGUMENT = set("BbcDEeFIiJLlmOoPpQRSWw")
 SCP_OPTIONS_WITH_ARGUMENT = set("cDFiJloPSX")
 SFTP_OPTIONS_WITH_ARGUMENT = set("BbcDFiJloPRSsX")
 ENDPOINT_BEARING_OPTIONS = {"J", "W", "o"}
+NETCAT_COMMANDS = {"nc", "ncat", "netcat"}
+NETCAT_OPTIONS_WITH_ARGUMENT = set("ceIiMmOPpqsTVwXx")
 WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT = {
     "command": set(),
     "env": set("aCSu"),
@@ -329,7 +331,20 @@ def endpoint_authority_host(authority: str) -> str | None:
     return host_port
 
 
-def option_endpoint_hosts(option: str, argument: str) -> list[str]:
+def openssh_option_value(argument: str) -> tuple[str, str] | None:
+    """Split an ``-o`` argument written as ``Key=Value`` or ``Key Value``."""
+    key, separator, value = argument.partition("=")
+    if separator:
+        return key.lower(), value
+    parts = argument.split(maxsplit=1)
+    return (parts[0].lower(), parts[1]) if len(parts) == 2 else None
+
+
+def option_endpoint_hosts(
+    option: str,
+    argument: str,
+    inspect_proxy_command: bool = True,
+) -> list[str]:
     """Extract endpoint hosts from ``-J``, ``-W``, and selected ``-o`` values."""
     if option == "J":
         return [
@@ -342,19 +357,77 @@ def option_endpoint_hosts(option: str, argument: str) -> list[str]:
         return [host] if host is not None else []
     if option != "o":
         return []
-    key, separator, value = argument.partition("=")
-    if not separator:
-        parts = argument.split(maxsplit=1)
-        if len(parts) != 2:
-            return []
-        key, value = parts
-    normalized_key = key.lower()
+    parsed_option = openssh_option_value(argument)
+    if parsed_option is None:
+        return []
+    normalized_key, value = parsed_option
     if normalized_key == "proxyjump":
         return option_endpoint_hosts("J", value)
     if normalized_key == "hostname":
         host = endpoint_authority_host(value)
         return [host] if host is not None else []
+    if normalized_key == "proxycommand" and inspect_proxy_command:
+        return proxy_command_hosts(value)
     return []
+
+
+def proxy_command_hosts(command: str) -> list[str]:
+    """Extract ProxyCommand endpoints with a finite, non-recursive worklist."""
+    hosts: list[str] = []
+    pending = [command]
+    inspected: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in inspected:
+            continue
+        inspected.add(current)
+        for line in current.replace("\\\n", " ").splitlines():
+            tokens = shell_tokens(line)
+            for index, token in enumerate(tokens):
+                executable = token.rsplit("/", maxsplit=1)[-1]
+                if executable == SSH_COMMAND and ssh_is_in_command_position(tokens, index):
+                    operands, option_arguments = parse_openssh_arguments(
+                        tokens,
+                        index,
+                        SSH_OPTIONS_WITH_ARGUMENT,
+                    )
+                    for option, argument in option_arguments:
+                        parsed_option = openssh_option_value(argument) if option == "o" else None
+                        if parsed_option is not None and parsed_option[0] == "proxycommand":
+                            pending.append(parsed_option[1])
+                            continue
+                        hosts.extend(option_endpoint_hosts(option, argument, False))
+                    if operands:
+                        destination = operands[0][0]
+                        uri_destination = uri_host(destination, "ssh")
+                        host = (
+                            uri_destination
+                            if uri_destination is not None
+                            else endpoint_authority_host(destination)
+                        )
+                        if host is not None:
+                            hosts.append(host)
+                    continue
+                if executable not in NETCAT_COMMANDS or not ssh_is_in_command_position(
+                    tokens, index
+                ):
+                    continue
+                operands, option_arguments = parse_openssh_arguments(
+                    tokens,
+                    index,
+                    NETCAT_OPTIONS_WITH_ARGUMENT,
+                )
+                hosts.extend(
+                    host
+                    for option, argument in option_arguments
+                    if option == "x"
+                    for host in option_endpoint_hosts("W", argument, False)
+                )
+                if operands:
+                    host = endpoint_authority_host(operands[0][0])
+                    if host is not None:
+                        hosts.append(host)
+    return hosts
 
 
 def has_disallowed_option_endpoint(option_arguments: list[tuple[str, str]]) -> bool:
