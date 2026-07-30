@@ -63,10 +63,12 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     rsync_uri = sync_command + "://"
     public_clone_user = "git" + "@github.com"
     local_forward = "Local" + "Forward"
-    file_uri = "file" + "://"
+    file_scheme = "file" + ":"
+    file_uri = file_scheme + "//"
     unix_home_path = "/" + "home"
     users_path = "/" + "Users"
     windows_users_path = "C:" + users_path
+    windows_users_backslash = "C:" + "\\Users"
     checkout_action = "actions/checkout" + "@v4"
     for text in (
         f"{remote_command} -i identity -p 2222 {private_endpoint}",
@@ -467,12 +469,21 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     ):
         assert "absolute user-home path" in categories(home)
     for home_uri in (
+        file_scheme + unix_home_path + "/private-user/.ssh/config",
         file_uri + unix_home_path + "/private-user/.ssh/config",
         file_uri + "localhost" + unix_home_path + "/private-user/.ssh/config",
         file_uri + users_path + "/Åsa/.ssh/config",
+        file_scheme + windows_users_path + "/private-user/.ssh/config",
+        file_scheme + "/" + windows_users_path + "/private-user/.ssh/config",
+        file_scheme + windows_users_backslash + "\\private-user\\.ssh\\config",
+        file_scheme + "/" + windows_users_backslash + "\\private-user\\.ssh\\config",
         file_uri + "/" + windows_users_path + "/private-user/.ssh/config",
         file_uri + unix_home_path + "/%E5%BC%A0%E4%B8%89/.ssh/config",
+        file_scheme.upper() + unix_home_path + "/张三/.ssh/config",
         file_uri + root_home + "/.ssh/config",
+        "HOME_URI=" + file_scheme + unix_home_path + "/private-user/.ssh/config",
+        "(" + file_scheme + unix_home_path + "/private-user/.ssh/config)",
+        "'" + file_scheme + unix_home_path + "/private-user/.ssh/config'",
     ):
         assert "absolute user-home path" in categories(home_uri)
     for home in (
@@ -495,11 +506,20 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         "/v1/Users/private-user",
         "https://example.com/C:/Users/private-user",
         file_uri + "server" + unix_home_path + "/private-user/.ssh/config",
+        file_scheme + "home/private-user/.ssh/config",
+        file_scheme + "//server" + unix_home_path + "/private-user/.ssh/config",
         file_uri + "/api" + unix_home_path + "/private-user",
         file_uri + unix_home_path,
+        file_scheme + "//localhost",
         file_uri + "/rooted/private-file",
         file_uri + "/C:/ProgramData/private-file",
-        "not" + file_uri + unix_home_path + "/private-user",
+        "not" + file_scheme + unix_home_path + "/private-user",
+        "https://example.com/" + file_scheme + unix_home_path + "/private-user/.ssh/config",
+        "/prefix/" + file_scheme + unix_home_path + "/private-user/.ssh/config",
+        "identifier_" + file_scheme + unix_home_path + "/private-user/.ssh/config",
+        "scheme:" + file_scheme + unix_home_path + "/private-user/.ssh/config",
+        "path\\" + file_scheme + unix_home_path + "/private-user/.ssh/config",
+        "prefix-" + file_scheme + unix_home_path + "/private-user/.ssh/config",
     ):
         assert "absolute user-home path" not in categories(non_home)
 
@@ -521,8 +541,14 @@ def test_public_metadata_guard_scans_paths_bytes_and_git_modes(tmp_path):
     subprocess.run(["git", "config", "user.name", "Metadata Guard Test"], cwd=repo, check=True)
 
     private_name = "person" + "@private.test.md"
+    utf8_home = "/" + "home" + "/张三/secret"
+    decoded = namespace["decode_tracked_bytes"](b"\xff" + utf8_home.encode())
+    assert utf8_home in decoded
+    assert "absolute user-home path" in namespace["metadata_categories"](decoded)
     (repo / private_name).write_text("clean", encoding="utf-8")
     (repo / "binary.dat").write_bytes(b"\xff/home/" + b"private-user/secret")
+    (repo / "utf8-home.dat").write_bytes(b"\xff" + utf8_home.encode())
+    (repo / "file-uri.dat").write_text("file:" + utf8_home, encoding="utf-8")
     (repo / "published-link").symlink_to("/home/" + "private-user/config")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
@@ -547,5 +573,7 @@ def test_public_metadata_guard_scans_paths_bytes_and_git_modes(tmp_path):
         for category, path in found
     )
     assert ("absolute user-home path", Path("binary.dat")) in found
+    assert ("absolute user-home path", Path("utf8-home.dat")) in found
+    assert ("absolute user-home path", Path("file-uri.dat")) in found
     assert ("absolute user-home path", Path("published-link")) in found
     assert ("unsupported tracked gitlink", Path("vendor")) in found

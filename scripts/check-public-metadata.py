@@ -557,12 +557,12 @@ def uri_host(destination: str, scheme: str) -> str | None:
 
 def has_absolute_user_home_file_uri(text: str) -> bool:
     """Recognize local ``file`` URIs whose path is an absolute user home."""
-    prefix = FILE_URI_SCHEME + "://"
+    prefix = FILE_URI_SCHEME + ":"
     lowered = text.lower()
     search_from = 0
     while (start := lowered.find(prefix, search_from)) >= 0:
         search_from = start + len(prefix)
-        if start and (text[start - 1].isalnum() or text[start - 1] in "+.-"):
+        if start and (text[start - 1].isalnum() or text[start - 1] in "_+.-/:\\"):
             continue
         end = search_from
         while end < len(text) and not text[end].isspace() and text[end] not in "<>'\"`":
@@ -578,8 +578,11 @@ def has_absolute_user_home_file_uri(text: str) -> bool:
         }:
             continue
         path = unquote(parsed.path)
-        if re.match(r"^/[A-Za-z]:[\\/]", path):
+        windows_path = re.match(r"^/?[A-Za-z]:[\\/]", path)
+        if windows_path is not None and path.startswith("/"):
             path = path[1:]
+        elif windows_path is None and not path.startswith("/"):
+            continue
         if ABSOLUTE_USER_HOME_PATH.search(path):
             return True
     return False
@@ -1030,7 +1033,10 @@ def tracked_entries(repo_dir: Path = REPO_DIR) -> list[tuple[str, Path]]:
 
 def decode_tracked_bytes(data: bytes) -> str:
     """Expose ASCII signatures in binary data and common Unicode encodings."""
-    decoded = [data.decode("latin-1")]
+    decoded = [
+        data.decode("utf-8", errors="replace"),
+        data.decode("latin-1"),
+    ]
     if b"\0" in data:
         decoded.extend(
             data.decode(encoding, errors="replace")
