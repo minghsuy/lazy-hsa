@@ -31,6 +31,11 @@ guessing which candidate was tested.
 - The release tag is created from the exact reviewed merge commit and is never
   moved.
 
+The installed-wheel check intentionally runs in the default test suite. This
+adds a clean build/install step to ordinary CI, but ensures the supported
+distribution contract cannot silently become an optional release-time check.
+The current CI cost is small relative to the packaging failure it prevents.
+
 PyPI can become a supported channel only through a separate reviewed change
 that configures a trusted publisher, uploads the exact verified artifacts, and
 performs a post-publication clean install.

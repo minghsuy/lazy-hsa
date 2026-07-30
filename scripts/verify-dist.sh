@@ -68,6 +68,7 @@ PY
 
 uv venv --python 3.12 "$VENV_PARENT/venv"
 uv pip install --python "$VENV_PARENT/venv/bin/python" "$WHEEL"
+cd "$VENV_PARENT"
 "$VENV_PARENT/venv/bin/lazy-hsa" --help >/dev/null
 "$VENV_PARENT/venv/bin/python" <<'PY'
 from pathlib import Path
@@ -78,6 +79,14 @@ import pillow_heif
 from PIL import Image
 
 from src.processors.llm_extractor import VisionExtractor
+
+module_path = Path(
+    __import__("src.processors.llm_extractor", fromlist=[""]).__file__
+).resolve()
+if "site-packages" not in module_path.parts:
+    raise SystemExit(
+        f"installed-wheel smoke test imported repository code: {module_path}"
+    )
 
 pillow_heif.register_heif_opener()
 with TemporaryDirectory() as directory:
