@@ -28,3 +28,4 @@ def test_public_release_helper_never_publishes():
     )
     assert result.returncode == 0
     assert "does not push, tag, or create" in result.stdout
+    assert "attest VERSION" in result.stdout

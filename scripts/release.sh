@@ -10,11 +10,14 @@ usage() {
 usage:
   scripts/release.sh check VERSION
   scripts/release.sh prepare VERSION
+  scripts/release.sh attest VERSION
 
 check    Validate the current public main and proposed version without writes.
 prepare Create a local release/vVERSION branch, update the version, lockfile,
-        and changelog, verify the exact commit, and build hashed artifacts.
-        It does not push, tag, or create a GitHub release.
+        and changelog, verify the candidate commit, and build candidate
+        artifacts. It does not push, tag, or create a GitHub release.
+attest   On the exact merged public main, recheck the complete lockfile and
+        build the retained, smoke-tested release artifacts and hashes.
 EOF
 }
 
@@ -102,6 +105,7 @@ preflight() {
   [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] ||
     die "local main is not the exact public remote head"
   require_versions_match
+  uv lock --check
   require_newer_version "$version"
   require_nonempty_changelog
   [[ -z "$(git ls-remote --tags origin "refs/tags/v$version")" ]] ||
@@ -145,10 +149,47 @@ prepare() {
   uv version "$version"
   bump_changelog "$version"
   require_versions_match
+  uv lock --check
   git add pyproject.toml uv.lock CHANGELOG.md
   git commit -m "Release v$version"
 
   # The complete distribution gate runs after the release commit exists.
+  scripts/verify.sh --verbose
+
+  local commit artifact_dir
+  commit="$(git rev-parse HEAD)"
+  artifact_dir="$REPO_DIR/dist/candidate-v$version"
+  mkdir -p "$artifact_dir"
+  [[ -z "$(find "$artifact_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
+    die "artifact directory is not empty: $artifact_dir"
+  scripts/verify-dist.sh "$artifact_dir"
+  printf '%s\n' "$commit" >"$artifact_dir/RELEASE-COMMIT"
+  (
+    cd "$artifact_dir"
+    sha256sum lazy_hsa-* >SHA256SUMS
+  )
+
+  echo "prepared v$version at $commit"
+  echo "candidate artifacts: $artifact_dir"
+  echo "next: push the branch and open a PR for independent review"
+  echo "after merge, run: scripts/release.sh attest $version"
+  echo "nothing was tagged or published"
+}
+
+attest() {
+  local version="$1"
+  require_semver "$version"
+  [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty"
+  [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] ||
+    die "must attest from main"
+  git fetch origin main
+  [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] ||
+    die "local main is not the exact public remote head"
+  require_versions_match
+  [[ "$(project_version pyproject.toml)" == "$version" ]] ||
+    die "project version does not match v$version"
+  uv lock --check
+
   scripts/verify.sh --verbose
 
   local commit artifact_dir
@@ -164,9 +205,8 @@ prepare() {
     sha256sum lazy_hsa-* >SHA256SUMS
   )
 
-  echo "prepared v$version at $commit"
-  echo "artifacts: $artifact_dir"
-  echo "next: push the branch and open a PR for independent review"
+  echo "attested v$version at exact public main $commit"
+  echo "release artifacts: $artifact_dir"
   echo "nothing was tagged or published"
 }
 
@@ -182,6 +222,10 @@ case "${1:-}" in
   prepare)
     [[ $# == 2 ]] || { usage >&2; exit 2; }
     prepare "$2"
+    ;;
+  attest)
+    [[ $# == 2 ]] || { usage >&2; exit 2; }
+    attest "$2"
     ;;
   *)
     usage >&2

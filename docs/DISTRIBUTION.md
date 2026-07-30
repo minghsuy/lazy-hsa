@@ -18,9 +18,11 @@ uv run lazy-hsa --help
 Each release candidate is prepared and tested as a wheel and source
 distribution in a clean environment. Those local artifacts and their
 `SHA256SUMS` manifest are verification inputs, not a promise that a package has
-been published to PyPI. `scripts/release.sh prepare X.Y.Z` creates the version
-commit, clean-installs and smoke-tests the retained wheel, and records the
-artifacts locally, but deliberately does not push, tag, or publish.
+been published to PyPI. `scripts/release.sh prepare X.Y.Z` creates and tests a
+candidate version commit without publishing. After that branch is reviewed and
+merged, `scripts/release.sh attest X.Y.Z` must run from the exact remote `main`;
+it rechecks the complete lockfile, clean-installs and smoke-tests the retained
+wheel, and records the exact merge commit with the release artifacts.
 
 ## Release invariants
 
@@ -33,8 +35,8 @@ artifacts locally, but deliberately does not push, tag, or publish.
   moved.
 
 Remote publication is an explicit operator step after the preparation branch is
-independently reviewed and merged. The public repository's release helper does
-not mutate remote release state.
+independently reviewed, merged, and attested from the exact merge commit. The
+public repository's release helper does not mutate remote release state.
 
 The installed-wheel check intentionally runs in the default test suite. This
 adds a clean build/install step to ordinary CI, but ensures the supported
