@@ -1,5 +1,6 @@
 """Installed-distribution contract tests."""
 
+import runpy
 import subprocess
 from pathlib import Path
 
@@ -43,3 +44,15 @@ def test_public_tree_has_no_environment_metadata():
         capture_output=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_public_metadata_guard_handles_ssh_options_and_contacts():
+    """Option-bearing SSH commands and contacts cannot bypass the guard."""
+    namespace = runpy.run_path(str(REPO_DIR / "scripts" / "check-public-metadata.py"))
+    categories = namespace["metadata_categories"]
+    assert "direct SSH machine endpoint" in categories(
+        "ssh -i identity -p 2222 user" + "@private-host"
+    )
+    assert "non-example email address" in categories("contact person" + "@private.test")
+    assert "non-example email address" not in categories("contact user@example.com")
+    assert "non-example email address" not in categories("from:auto-confirm@amazon.com")

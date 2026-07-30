@@ -9,13 +9,19 @@ from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 PUBLIC_REPOSITORY = "minghsuy/lazy-hsa"
+ALLOWED_CONTACTS = {
+    "auto-confirm@amazon.com",
+    "ship-confirm@amazon.com",
+}
+EMAIL_PATTERN = re.compile(
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+    re.IGNORECASE,
+)
 
 PATTERNS = {
     "absolute user-home path": re.compile(r"(?:/Users|/home)/[A-Za-z0-9._-]+/"),
-    "direct SSH machine endpoint": re.compile(r"\bssh\s+\S+@\S+"),
-    "non-example email address": re.compile(
-        r"\b[A-Z0-9._%+-]+@(?!example\.com\b)[A-Z0-9.-]+\.[A-Z]{2,}\b",
-        re.IGNORECASE,
+    "direct SSH machine endpoint": re.compile(
+        r"\bssh\b[^\n;&|]*\b[A-Za-z0-9._-]+@[A-Za-z0-9._-]+",
     ),
     "environment-specific GitHub repository": re.compile(
         r"github\.com/minghsuy/"
@@ -38,6 +44,19 @@ def tracked_files() -> list[Path]:
     ]
 
 
+def metadata_categories(text: str) -> list[str]:
+    categories = [
+        category for category, pattern in PATTERNS.items() if pattern.search(text)
+    ]
+    contacts = {match.group(0).lower() for match in EMAIL_PATTERN.finditer(text)}
+    if any(
+        not contact.endswith("@example.com") and contact not in ALLOWED_CONTACTS
+        for contact in contacts
+    ):
+        categories.append("non-example email address")
+    return categories
+
+
 def violations() -> list[tuple[str, Path]]:
     found: list[tuple[str, Path]] = []
     for path in tracked_files():
@@ -46,14 +65,9 @@ def violations() -> list[tuple[str, Path]]:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for category, pattern in PATTERNS.items():
-            if category == "non-example email address" and not (
-                relative_path.name == "README.md"
-                or relative_path.parts[0] in {".github", "docs", "scripts"}
-            ):
-                continue
-            if pattern.search(text):
-                found.append((category, relative_path))
+        found.extend(
+            (category, relative_path) for category in metadata_categories(text)
+        )
     return found
 
 
