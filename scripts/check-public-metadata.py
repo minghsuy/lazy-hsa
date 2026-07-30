@@ -7,7 +7,7 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 PUBLIC_REPOSITORY = "minghsuy/lazy-hsa"
@@ -29,6 +29,13 @@ SSH_COMMAND = "\x73\x73\x68"
 SCP_COMMAND = "\x73\x63\x70"
 SFTP_COMMAND = "\x73\x66\x74\x70"
 RSYNC_COMMAND = "\x72\x73\x79\x6e\x63"
+FILE_URI_SCHEME = "\x66\x69\x6c\x65"
+STANDALONE_REMOTE_URI_SCHEMES = {
+    SSH_COMMAND,
+    SCP_COMMAND,
+    SFTP_COMMAND,
+    RSYNC_COMMAND,
+}
 SSH_COMMAND_PREDECESSORS = {
     "$",
     "!",
@@ -46,6 +53,7 @@ SSH_COMMAND_PREDECESSORS = {
     "do",
 }
 SSH_COMMAND_WRAPPERS = {"command", "env", "exec", "sudo"}
+PROCESS_COMMAND_WRAPPERS = {"busybox", "nice", "nohup", "timeout"}
 SSH_OPTIONS_WITH_ARGUMENT = set("BbcDEeFIiJLlmOoPpQRSWw")
 SCP_OPTIONS_WITH_ARGUMENT = set("cDFiJloPSX")
 SFTP_OPTIONS_WITH_ARGUMENT = set("BbcDFiJloPRSsX")
@@ -114,6 +122,7 @@ NETCAT_COMMANDS = {"nc", "ncat", "netcat"}
 NETCAT_OPTIONS_WITH_ARGUMENT = set("ceIiMmOPpqsTVwXx")
 SHELL_COMMANDS = {"bash", "dash", "ksh", "sh", "zsh"}
 SHELL_OPTIONS_WITH_ARGUMENT = {"c", "O", "o"}
+SHELL_LONG_OPTIONS_WITH_ARGUMENT = {"init-file", "rcfile"}
 WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT = {
     "command": set(),
     "env": set("aCSu"),
@@ -181,12 +190,17 @@ CONTEXTUAL_PACKAGE_REFS = (
     ),
 )
 
+ABSOLUTE_USER_HOME_PATH = re.compile(
+    r"(?:(?<![A-Za-z0-9._:/-])(?:/Users|/home)/[\w.-]+"
+    r"(?=[\\/]|$|[^\w.-])|"
+    r"(?<![A-Za-z0-9._/\\-])[A-Za-z]:[\\/]+Users[\\/]+[\w.-]+"
+    r"(?=[\\/]|$|[^\w.-])|"
+    r"(?<![A-Za-z0-9._/-])(?-i:/root)(?=/|$))",
+    re.IGNORECASE,
+)
+
 PATTERNS = {
-    "absolute user-home path": re.compile(
-        r"(?:(?:/Users|/home)/|[A-Za-z]:[\\/]+Users[\\/]+)"
-        r"[A-Za-z0-9._-]+(?=[\\/]|$|[^A-Za-z0-9._-])",
-        re.IGNORECASE,
-    ),
+    "absolute user-home path": ABSOLUTE_USER_HOME_PATH,
     "environment-specific GitHub repository": re.compile(
         r"(?:github\.com/|raw\.githubusercontent\.com/|api\.github\.com/repos/)"
         r"minghsuy/"
@@ -195,11 +209,22 @@ PATTERNS = {
     ),
 }
 
+PUBLIC_GITHUB_SSH_CLONE = re.compile(
+    rf"(?<![A-Z0-9._%+-])(?:"
+    rf"{re.escape(SSH_COMMAND)}://git\x40github\.com/"
+    rf"|git\x40github\.com:)"
+    rf"{re.escape(PUBLIC_REPOSITORY)}(?:\.git)?"
+    r"(?![A-Z0-9._/-])",
+    re.IGNORECASE,
+)
+
 
 def allowed_reference_spans(text: str) -> tuple[re.Match[str], ...]:
     """Return package, action, and image references that use ``@`` safely."""
-    return tuple(QUALIFIED_PACKAGE_REF.finditer(text)) + tuple(
-        match for pattern in CONTEXTUAL_PACKAGE_REFS for match in pattern.finditer(text)
+    return (
+        tuple(QUALIFIED_PACKAGE_REF.finditer(text))
+        + tuple(match for pattern in CONTEXTUAL_PACKAGE_REFS for match in pattern.finditer(text))
+        + tuple(PUBLIC_GITHUB_SSH_CLONE.finditer(text))
     )
 
 
@@ -209,6 +234,15 @@ def is_within_allowed_reference(
 ) -> bool:
     """Return whether a match is wholly contained in a recognized reference."""
     return any(ref.start() <= match.start() and ref.end() >= match.end() for ref in allowed_refs)
+
+
+def span_is_within_allowed_reference(
+    start: int,
+    end: int,
+    allowed_refs: tuple[re.Match[str], ...],
+) -> bool:
+    """Return whether offsets are wholly contained in a recognized reference."""
+    return any(ref.start() <= start and ref.end() >= end for ref in allowed_refs)
 
 
 def has_disallowed_user_at_host_identifier(
@@ -238,6 +272,17 @@ def shell_tokens(line: str) -> list[str]:
         return list(lexer)
     except ValueError:
         return re.findall(r"&&|\|\||[;&|()]|[^\s;&|()]+", line)
+
+
+def config_tokens(line: str) -> list[str]:
+    """Tokenize one OpenSSH config line while honoring comments."""
+    try:
+        lexer = shlex.shlex(line, posix=True)
+        lexer.commenters = "#"
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return []
 
 
 def parse_openssh_arguments(
@@ -336,6 +381,54 @@ def consume_wrapper_options(prefix: list[str], index: int, wrapper: str) -> int 
     return index
 
 
+def consume_process_wrapper(prefix: list[str], index: int, wrapper: str) -> int | None:
+    """Return the command position after a bounded process wrapper grammar."""
+    index += 1
+    if wrapper == "busybox":
+        return index
+    if wrapper == "nohup":
+        if index < len(prefix) and prefix[index] == "--":
+            return index + 1
+        return None if index < len(prefix) else index
+    if wrapper == "nice":
+        while index < len(prefix) and prefix[index].startswith("-"):
+            token = prefix[index]
+            if token == "--":
+                return index + 1
+            if token in {"--help", "--version"}:
+                return None
+            name, separator, _ = token.partition("=")
+            if name in {"--adjustment", "-n"} and not separator:
+                if index + 1 >= len(prefix):
+                    return None
+                index += 1
+            index += 1
+        return index
+    while index < len(prefix) and prefix[index].startswith("-"):
+        token = prefix[index]
+        if token == "--":
+            index += 1
+            break
+        if token in {"--help", "--version"}:
+            return None
+        name, separator, _ = token.partition("=")
+        if name in {"--kill-after", "--signal"} and not separator:
+            if index + 1 >= len(prefix):
+                return None
+            index += 1
+        elif token.startswith("-") and not token.startswith("--"):
+            for option_index, option in enumerate(token[1:]):
+                if option not in {"k", "s"}:
+                    continue
+                if not token[option_index + 2 :] and index + 1 >= len(prefix):
+                    return None
+                if not token[option_index + 2 :]:
+                    index += 1
+                break
+        index += 1
+    return index + 1 if index < len(prefix) else None
+
+
 def shell_command_prefix(tokens: list[str], command_index: int) -> list[str]:
     """Return tokens between the nearest shell boundary and a command."""
     start = command_index - 1
@@ -354,9 +447,12 @@ def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
         index += 1
     while index < len(prefix):
         wrapper = prefix[index].rsplit("/", maxsplit=1)[-1]
-        if wrapper not in SSH_COMMAND_WRAPPERS:
+        if wrapper in SSH_COMMAND_WRAPPERS:
+            next_index = consume_wrapper_options(prefix, index, wrapper)
+        elif wrapper in PROCESS_COMMAND_WRAPPERS:
+            next_index = consume_process_wrapper(prefix, index, wrapper)
+        else:
             return False
-        next_index = consume_wrapper_options(prefix, index, wrapper)
         if next_index is None:
             return False
         index = next_index
@@ -365,21 +461,44 @@ def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
     return True
 
 
-def clear_ssh_endpoint_is_actionable(
-    tokens: list[str],
-    command_index: int,
-    in_command_position: bool,
-) -> bool:
-    """Keep clear endpoints fail-closed without overriding known prose/invalid wrappers."""
-    if in_command_position:
-        return True
-    prefix = shell_command_prefix(tokens, command_index)
-    if not prefix:
-        return True
-    first = prefix[0].rsplit("/", maxsplit=1)[-1]
-    if first in SSH_COMMAND_WRAPPERS:
-        return False
-    return not first[:1].isupper()
+def command_token_sequences(text: str):
+    """Yield commands plus bounded shell and ``env -S`` command strings."""
+    pending = [text]
+    inspected: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in inspected:
+            continue
+        inspected.add(current)
+        for line in current.replace("\\\n", " ").splitlines():
+            tokens = shell_tokens(line)
+            yield tokens
+            for index, token in enumerate(tokens):
+                executable = token.rsplit("/", maxsplit=1)[-1]
+                if not ssh_is_in_command_position(tokens, index):
+                    continue
+                if executable in SHELL_COMMANDS:
+                    _, option_arguments = parse_openssh_arguments(
+                        tokens,
+                        index,
+                        SHELL_OPTIONS_WITH_ARGUMENT,
+                        SHELL_LONG_OPTIONS_WITH_ARGUMENT,
+                    )
+                    pending.extend(
+                        argument for option, argument in option_arguments if option == "c"
+                    )
+                elif executable == "env":
+                    _, option_arguments = parse_openssh_arguments(
+                        tokens,
+                        index,
+                        WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT["env"],
+                        WRAPPER_LONG_OPTIONS_WITH_ARGUMENT["env"],
+                    )
+                    pending.extend(
+                        argument
+                        for option, argument in option_arguments
+                        if option in {"S", "split-string"}
+                    )
 
 
 def single_label_destination_is_unambiguous(
@@ -410,6 +529,66 @@ def uri_host(destination: str, scheme: str) -> str | None:
         return parsed.hostname
     except ValueError:
         return None
+
+
+def has_absolute_user_home_file_uri(text: str) -> bool:
+    """Recognize local ``file`` URIs whose path is an absolute user home."""
+    prefix = FILE_URI_SCHEME + "://"
+    lowered = text.lower()
+    search_from = 0
+    while (start := lowered.find(prefix, search_from)) >= 0:
+        search_from = start + len(prefix)
+        if start and (text[start - 1].isalnum() or text[start - 1] in "+.-"):
+            continue
+        end = search_from
+        while end < len(text) and not text[end].isspace() and text[end] not in "<>'\"`":
+            end += 1
+        candidate = text[start:end].rstrip(".,;!?)}")
+        try:
+            parsed = urlsplit(candidate)
+        except ValueError:
+            continue
+        if parsed.scheme.lower() != FILE_URI_SCHEME or parsed.netloc.lower() not in {
+            "",
+            "localhost",
+        }:
+            continue
+        path = unquote(parsed.path)
+        if re.match(r"^/[A-Za-z]:[\\/]", path):
+            path = path[1:]
+        if ABSOLUTE_USER_HOME_PATH.search(path):
+            return True
+    return False
+
+
+def has_disallowed_remote_uri(
+    text: str,
+    allowed_refs: tuple[re.Match[str], ...] | None = None,
+) -> bool:
+    """Reject non-example remote URIs independently of command parsing."""
+    allowed_refs = allowed_reference_spans(text) if allowed_refs is None else allowed_refs
+    lowered = text.lower()
+    for scheme in STANDALONE_REMOTE_URI_SCHEMES:
+        prefix = scheme + "://"
+        search_from = 0
+        while (start := lowered.find(prefix, search_from)) >= 0:
+            search_from = start + len(prefix)
+            if start and (text[start - 1].isalnum() or text[start - 1] in "+.-"):
+                continue
+            end = search_from
+            while end < len(text) and not text[end].isspace() and text[end] not in "<>'\"`":
+                end += 1
+            candidate = text[start:end].rstrip(".,;!?)}")
+            if span_is_within_allowed_reference(
+                start,
+                start + len(candidate),
+                allowed_refs,
+            ):
+                continue
+            host = uri_host(candidate, scheme)
+            if host is not None and remote_host_is_disallowed(host):
+                return True
+    return False
 
 
 def remote_host_is_disallowed(host: str) -> bool:
@@ -519,6 +698,42 @@ def option_endpoint_hosts(
     return []
 
 
+def has_disallowed_openssh_config_endpoint(text: str) -> bool:
+    """Reject endpoint-bearing OpenSSH directives on actual config lines."""
+    endpoint_options = {
+        "hostname": "W",
+        "localforward": "L",
+        "proxyjump": "J",
+        "remoteforward": "R",
+    }
+    for line in text.splitlines():
+        tokens = config_tokens(line)
+        if not tokens:
+            continue
+        key, separator, attached_value = tokens[0].partition("=")
+        normalized_key = key.lower()
+        values = ([attached_value] if separator else []) + tokens[1:]
+        if values[:1] == ["="]:
+            values = values[1:]
+        if not values:
+            continue
+        if normalized_key == "proxycommand":
+            value = " ".join(shlex.quote(part) for part in values)
+            hosts = proxy_command_hosts(value)
+        elif (option := endpoint_options.get(normalized_key)) is not None:
+            value = " ".join(values)
+            if option in {"L", "R"}:
+                host = openssh_forward_target(value)
+                hosts = [host] if host is not None else []
+            else:
+                hosts = option_endpoint_hosts(option, value, False)
+        else:
+            continue
+        if any(remote_host_is_disallowed(host) for host in hosts):
+            return True
+    return False
+
+
 def proxy_command_hosts(command: str) -> list[str]:
     """Extract ProxyCommand endpoints with a finite, non-recursive worklist."""
     hosts: list[str] = []
@@ -529,20 +744,9 @@ def proxy_command_hosts(command: str) -> list[str]:
         if current in inspected:
             continue
         inspected.add(current)
-        for line in current.replace("\\\n", " ").splitlines():
-            tokens = shell_tokens(line)
+        for tokens in command_token_sequences(current):
             for index, token in enumerate(tokens):
                 executable = token.rsplit("/", maxsplit=1)[-1]
-                if executable in SHELL_COMMANDS and ssh_is_in_command_position(tokens, index):
-                    _, option_arguments = parse_openssh_arguments(
-                        tokens,
-                        index,
-                        SHELL_OPTIONS_WITH_ARGUMENT,
-                    )
-                    pending.extend(
-                        argument for option, argument in option_arguments if option == "c"
-                    )
-                    continue
                 if executable == SSH_COMMAND and ssh_is_in_command_position(tokens, index):
                     operands, option_arguments = parse_openssh_arguments(
                         tokens,
@@ -648,24 +852,19 @@ def sftp_remote_host(operand: str) -> str | None:
 
 def has_ssh_command_without_user(text: str) -> bool:
     """Reject username-less hostlike SSH destinations in shell command position."""
-    normalized = text.replace("\\\n", " ")
-    for line in normalized.splitlines():
-        tokens = shell_tokens(line)
+    for tokens in command_token_sequences(text):
         for index, token in enumerate(tokens):
             if token.rsplit("/", maxsplit=1)[-1] != SSH_COMMAND:
                 continue
             in_command_position = ssh_is_in_command_position(tokens, index)
-            clear_endpoint_is_actionable = clear_ssh_endpoint_is_actionable(
-                tokens,
-                index,
-                in_command_position,
-            )
+            if not in_command_position:
+                continue
             operands, option_arguments = parse_openssh_arguments(
                 tokens,
                 index,
                 SSH_OPTIONS_WITH_ARGUMENT,
             )
-            if clear_endpoint_is_actionable and has_disallowed_option_endpoint(option_arguments):
+            if has_disallowed_option_endpoint(option_arguments):
                 return True
             if not operands:
                 continue
@@ -678,9 +877,7 @@ def has_ssh_command_without_user(text: str) -> bool:
             )
             if host is None or not remote_host_is_disallowed(host):
                 continue
-            if clear_endpoint_is_actionable and (
-                uri_destination is not None or HOSTLIKE_SSH_DESTINATION.fullmatch(host)
-            ):
+            if uri_destination is not None or HOSTLIKE_SSH_DESTINATION.fullmatch(host):
                 return True
             if (
                 in_command_position
@@ -697,13 +894,12 @@ def has_ssh_command_without_user(text: str) -> bool:
 
 def has_scp_command_with_remote(text: str) -> bool:
     """Reject non-example remote operands in shell SCP command position."""
-    normalized = text.replace("\\\n", " ")
-    for line in normalized.splitlines():
-        tokens = shell_tokens(line)
+    for tokens in command_token_sequences(text):
         for index, token in enumerate(tokens):
             if token.rsplit("/", maxsplit=1)[-1] != SCP_COMMAND:
                 continue
-            if not ssh_is_in_command_position(tokens, index):
+            in_command_position = ssh_is_in_command_position(tokens, index)
+            if not in_command_position:
                 continue
             operands, option_arguments = parse_openssh_arguments(
                 tokens,
@@ -721,13 +917,12 @@ def has_scp_command_with_remote(text: str) -> bool:
 
 def has_sftp_command_with_remote(text: str) -> bool:
     """Reject non-example endpoints in shell SFTP command position."""
-    normalized = text.replace("\\\n", " ")
-    for line in normalized.splitlines():
-        tokens = shell_tokens(line)
+    for tokens in command_token_sequences(text):
         for index, token in enumerate(tokens):
             if token.rsplit("/", maxsplit=1)[-1] != SFTP_COMMAND:
                 continue
-            if not ssh_is_in_command_position(tokens, index):
+            in_command_position = ssh_is_in_command_position(tokens, index)
+            if not in_command_position:
                 continue
             operands, option_arguments = parse_openssh_arguments(
                 tokens,
@@ -744,13 +939,15 @@ def has_sftp_command_with_remote(text: str) -> bool:
                 continue
             if HOSTLIKE_SSH_DESTINATION.fullmatch(host):
                 return True
-            if SINGLE_LABEL_SSH_DESTINATION.fullmatch(
-                host
-            ) and single_label_destination_is_unambiguous(
-                tokens,
-                index,
-                destination_index,
-                SFTP_COMMAND,
+            if (
+                SINGLE_LABEL_SSH_DESTINATION.fullmatch(host)
+                and in_command_position
+                and single_label_destination_is_unambiguous(
+                    tokens,
+                    index,
+                    destination_index,
+                    SFTP_COMMAND,
+                )
             ):
                 return True
     return False
@@ -758,13 +955,12 @@ def has_sftp_command_with_remote(text: str) -> bool:
 
 def has_rsync_command_with_remote(text: str) -> bool:
     """Reject non-example remote operands in shell rsync command position."""
-    normalized = text.replace("\\\n", " ")
-    for line in normalized.splitlines():
-        tokens = shell_tokens(line)
+    for tokens in command_token_sequences(text):
         for index, token in enumerate(tokens):
             if token.rsplit("/", maxsplit=1)[-1] != RSYNC_COMMAND:
                 continue
-            if not ssh_is_in_command_position(tokens, index):
+            in_command_position = ssh_is_in_command_position(tokens, index)
+            if not in_command_position:
                 continue
             operands, _ = parse_openssh_arguments(
                 tokens,
@@ -827,9 +1023,13 @@ def read_index_text(repo_dir: Path, relative_path: Path) -> str | None:
 
 def metadata_categories(text: str) -> list[str]:
     categories = [category for category, pattern in PATTERNS.items() if pattern.search(text)]
+    if "absolute user-home path" not in categories and has_absolute_user_home_file_uri(text):
+        categories.append("absolute user-home path")
     allowed_refs = allowed_reference_spans(text)
     if (
         has_disallowed_user_at_host_identifier(text, allowed_refs)
+        or has_disallowed_remote_uri(text, allowed_refs)
+        or has_disallowed_openssh_config_endpoint(text)
         or has_ssh_command_without_user(text)
         or has_scp_command_with_remote(text)
         or has_sftp_command_with_remote(text)
