@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -20,14 +21,44 @@ EMAIL_PATTERN = re.compile(
 
 PATTERNS = {
     "absolute user-home path": re.compile(r"(?:/Users|/home)/[A-Za-z0-9._-]+/"),
-    "direct SSH machine endpoint": re.compile(
-        r"\bssh\b[^\n;&|]*\b[A-Za-z0-9._-]+@[A-Za-z0-9._-]+",
-    ),
     "environment-specific GitHub repository": re.compile(
         r"github\.com/minghsuy/"
         r"(?!lazy-hsa(?:\.git)?(?=$|[^A-Za-z0-9_.-]))[A-Za-z0-9_.-]+",
     ),
 }
+SSH_DESTINATION = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+")
+SSH_COMMAND = re.compile(r"(?m)(?:^[ \t]*|[;&|][ \t]*|\$[ \t]+)ssh(?=[ \t])")
+SSH_OPTIONS_WITH_ARGUMENT = set("bcDEeFIiJLlmOo pQRSWw".replace(" ", ""))
+
+
+def has_direct_ssh_endpoint(text: str) -> bool:
+    """Return whether text contains a shell SSH command with a user@host target."""
+    normalized = re.sub(r"\\\r?\n[ \t]*", " ", text)
+    for match in SSH_COMMAND.finditer(normalized):
+        ssh_start = match.end() - len("ssh")
+        command = re.split(r"[;&|\n]", normalized[ssh_start:], maxsplit=1)[0]
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            continue
+        if not tokens or tokens[0] != "ssh":
+            continue
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                index += 1
+                break
+            if not token.startswith("-") or token == "-":
+                break
+            option = token[1:2]
+            if option in SSH_OPTIONS_WITH_ARGUMENT and len(token) == 2:
+                index += 2
+            else:
+                index += 1
+        if index < len(tokens) and SSH_DESTINATION.fullmatch(tokens[index]):
+            return True
+    return False
 
 
 def tracked_files() -> list[Path]:
@@ -48,6 +79,8 @@ def metadata_categories(text: str) -> list[str]:
     categories = [
         category for category, pattern in PATTERNS.items() if pattern.search(text)
     ]
+    if has_direct_ssh_endpoint(text):
+        categories.append("direct SSH machine endpoint")
     contacts = {match.group(0).lower() for match in EMAIL_PATTERN.finditer(text)}
     if any(
         not contact.endswith("@example.com") and contact not in ALLOWED_CONTACTS

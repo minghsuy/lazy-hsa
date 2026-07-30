@@ -53,6 +53,12 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     assert "direct SSH machine endpoint" in categories(
         "ssh -i identity -p 2222 user" + "@private-host"
     )
+    assert "direct SSH machine endpoint" in categories(
+        "ssh -i identity \\\n  user" + "@private-host"
+    )
+    assert "direct SSH machine endpoint" not in categories(
+        "For SSH support, contact user@example.com."
+    )
     assert "non-example email address" in categories("contact person" + "@private.test")
     assert "non-example email address" not in categories("contact user@example.com")
     assert "non-example email address" not in categories("from:auto-confirm@amazon.com")
