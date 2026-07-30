@@ -124,6 +124,21 @@ SHELL_COMMANDS = {"bash", "dash", "ksh", "sh", "zsh"}
 SHELL_OPTIONS_WITH_ARGUMENT = {"c", "O", "o"}
 SHELL_LONG_OPTIONS_WITH_ARGUMENT = {"init-file", "rcfile"}
 INLINE_YAML_COMMAND = re.compile(r"^\s*(?:-\s*)?(?:run|command|entrypoint|script)\s*:\s*(.*?)\s*$")
+RAW_GIT_URL_ASSIGNMENT = re.compile(
+    r"^\s*(?:[A-Z0-9_.-]+\.)?(?:url|pushurl)\s*=\s*(.*)$",
+    re.IGNORECASE,
+)
+OPENSSH_MATCH_FLAGS = {"all", "canonical", "final"}
+OPENSSH_MATCH_VALUE_CRITERIA = {
+    "command",
+    "exec",
+    "host",
+    "localnetwork",
+    "localuser",
+    "originalhost",
+    "tagged",
+    "user",
+}
 WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT = {
     "command": set(),
     "env": set("aCSu"),
@@ -290,6 +305,27 @@ def config_tokens(line: str) -> list[str]:
         return list(lexer)
     except ValueError:
         return []
+
+
+def openssh_match_exec_commands(text: str) -> list[str]:
+    """Extract commands from line-anchored OpenSSH ``Match exec`` criteria."""
+    commands: list[str] = []
+    for line in text.splitlines():
+        tokens = config_tokens(line)
+        if not tokens or tokens[0].lower() != "match":
+            continue
+        index = 1
+        while index < len(tokens):
+            criterion = tokens[index].removeprefix("!").lower()
+            if criterion in OPENSSH_MATCH_FLAGS:
+                index += 1
+                continue
+            if criterion not in OPENSSH_MATCH_VALUE_CRITERIA or index + 1 >= len(tokens):
+                break
+            if criterion == "exec":
+                commands.append(tokens[index + 1])
+            index += 2
+    return commands
 
 
 def executable_line(line: str) -> str:
@@ -849,6 +885,38 @@ def scp_remote_host(operand: str) -> str | None:
     return host[1:-1] if host.startswith("[") and host.endswith("]") else host
 
 
+def has_disallowed_git_scp_url(text: str) -> bool:
+    """Reject scp-like remotes in line-anchored Git URL assignments."""
+    for line in text.splitlines():
+        raw_assignment = RAW_GIT_URL_ASSIGNMENT.fullmatch(line)
+        if raw_assignment is not None:
+            raw_value = raw_assignment.group(1).lstrip()
+            if raw_value.startswith(("'", '"')):
+                raw_value = raw_value[1:]
+            if re.match(r"^[A-Za-z]:[\\/]", raw_value):
+                continue
+        tokens = config_tokens(line)
+        if not tokens:
+            continue
+        key, separator, attached_value = tokens[0].partition("=")
+        if key.lower().rsplit(".", maxsplit=1)[-1] not in {"url", "pushurl"}:
+            continue
+        values = ([attached_value] if separator else []) + tokens[1:]
+        if values[:1] == ["="]:
+            values = values[1:]
+        if not values:
+            continue
+        remote = values[0]
+        if PUBLIC_GITHUB_SSH_CLONE.fullmatch(remote):
+            continue
+        if re.match(r"^[A-Za-z]:[\\/]", remote):
+            continue
+        host = scp_remote_host(remote)
+        if host is not None and remote.rpartition(":")[2] and remote_host_is_disallowed(host):
+            return True
+    return False
+
+
 def rsync_remote_host(operand: str) -> str | None:
     """Extract a host from an rsync URI or legacy ``[user@]host:path`` operand."""
     uri_destination = uri_host(operand, "rsync")
@@ -1010,6 +1078,21 @@ def has_rsync_command_with_remote(text: str) -> bool:
     return False
 
 
+def has_disallowed_openssh_match_exec(text: str) -> bool:
+    """Reject private endpoints in active OpenSSH ``Match exec`` commands."""
+    for command in openssh_match_exec_commands(text):
+        if any(remote_host_is_disallowed(host) for host in proxy_command_hosts(command)):
+            return True
+        if (
+            has_disallowed_remote_uri(command)
+            or has_scp_command_with_remote(command)
+            or has_sftp_command_with_remote(command)
+            or has_rsync_command_with_remote(command)
+        ):
+            return True
+    return False
+
+
 def tracked_entries(repo_dir: Path = REPO_DIR) -> list[tuple[str, Path]]:
     result = subprocess.run(
         ["git", "ls-files", "--stage", "-z"],
@@ -1066,7 +1149,9 @@ def metadata_categories(text: str) -> list[str]:
     if (
         has_disallowed_user_at_host_identifier(text, allowed_refs)
         or has_disallowed_remote_uri(text, allowed_refs)
+        or has_disallowed_git_scp_url(text)
         or has_disallowed_openssh_config_endpoint(text)
+        or has_disallowed_openssh_match_exec(text)
         or has_ssh_command_without_user(text)
         or has_scp_command_with_remote(text)
         or has_sftp_command_with_remote(text)

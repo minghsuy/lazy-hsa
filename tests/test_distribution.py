@@ -70,6 +70,10 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     windows_users_path = "C:" + users_path
     windows_users_backslash = "C:" + "\\Users"
     checkout_action = "actions/checkout" + "@v4"
+    git_url_key = "u" + "rl"
+    git_pushurl_key = "push" + "url"
+    windows_repo = "C:" + "\\repos\\private.git"
+    escaped_windows_repo = "C:" + "\\\\repos\\\\private.git"
     for text in (
         f"{remote_command} -i identity -p 2222 {private_endpoint}",
         f"{remote_command} -i identity \\\n  {private_endpoint}",
@@ -261,6 +265,18 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"command: {copy_command} private-host:/private/file .",
         f"entrypoint: {transfer_command} private-host:/private/path",
         f"script: {sync_command} private-host:/private/path ./destination",
+        f"{git_url_key} = private-host:repo.git",
+        f"{git_pushurl_key}=192.168.1.20:repo.git",
+        f"remote.origin.{git_url_key} = [fd00::1]:repo.git",
+        f"{git_url_key} = user" + "@private-host:repo.git",
+        f'[submodule "private"]\n\t{git_url_key} = private-host:repo.git',
+        f'Match exec "{remote_command} prod uptime"',
+        f'Match !exec "{remote_command} private-host"',
+        f'Match host *.example.com exec "{shell_command} -c '
+        f"'{copy_command} private-host:/private/file .'\"",
+        f"Match canonical exec \"env -S '{remote_command} private-host'\"",
+        f'Match exec "{relay_command} private-host 22"',
+        f'Match exec "! {remote_command} private-host"',
     ):
         assert "direct SSH machine endpoint" in categories(text)
     for prose in (
@@ -395,6 +411,30 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"run: echo {remote_command} private-host",
         f"run: [{remote_command}, private-host]",
         f"run: | {remote_command} private-host",
+        f"Use {git_url_key} = private-host:repo.git in config.",
+        "path = private-host:repo.git",
+        f"{git_url_key} = ./private-host:repo.git",
+        f"{git_url_key} = /srv/private-host:repo.git",
+        f"{git_url_key} = C:/repos/private.git",
+        f"{git_url_key} = {windows_repo}",
+        f'{git_url_key} = "{escaped_windows_repo}" # local checkout',
+        f"{git_pushurl_key}={windows_repo} # local mirror",
+        f"{git_url_key} = example.com:repo.git",
+        f"{git_url_key} = user@example.com:repo.git",
+        f"{git_url_key} = " + public_clone_user + ":minghsuy/lazy-hsa.git",
+        f"{git_url_key} = https://private-host/repo.git",
+        "insteadOf = private-host:repo.git",
+        f"{git_url_key} = --upload-pack=private-host:repo.git",
+        f"{git_url_key} = private-host",
+        f'# Match exec "{remote_command} private-host"',
+        f'Use Match exec "{remote_command} private-host" in config.',
+        f'Match host exec "{remote_command} private-host"',
+        f'Match command "{remote_command} private-host"',
+        "Match host private-host",
+        f'Match exec "{remote_command} example.com"',
+        f'Match !exec "{remote_command} example.com"',
+        "Match exec",
+        "Match all",
     ):
         assert "direct SSH machine endpoint" not in categories(prose)
     assert "direct SSH machine endpoint" not in categories("contact user@example.com")
