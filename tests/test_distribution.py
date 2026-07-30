@@ -9,6 +9,76 @@ import yaml
 REPO_DIR = Path(__file__).resolve().parents[1]
 
 
+def workflow_paths(root: Path) -> list[Path]:
+    """Return both supported GitHub Actions workflow extensions."""
+    return sorted([*root.glob("*.yml"), *root.glob("*.yaml")])
+
+
+def executable_uses_refs(workflow: dict) -> list[str]:
+    """Return action-step and reusable-workflow executable references."""
+    refs: list[str] = []
+    for job in workflow.get("jobs", {}).values():
+        if "uses" in job:
+            refs.append(job["uses"])
+        refs.extend(step["uses"] for step in job.get("steps", []) if "uses" in step)
+    return refs
+
+
+def uses_ref_is_immutable(ref: str) -> bool:
+    """Accept repository-local actions, image digests, or exact Git SHAs."""
+    if ref.startswith("./"):
+        return True
+    if ref.startswith("docker://"):
+        digest = ref.rpartition("@sha256:")[2]
+        return len(digest) == 64 and all(character in "0123456789abcdef" for character in digest)
+    revision = ref.rpartition("@")[2]
+    return len(revision) == 40 and all(character in "0123456789abcdef" for character in revision)
+
+
+def repository_uses_refs(repo_dir: Path) -> list[str]:
+    """Return workflow refs plus refs from every reachable local composite action."""
+    refs: list[str] = []
+    pending_local_refs: list[str] = []
+    for workflow_path in workflow_paths(repo_dir / ".github" / "workflows"):
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8")) or {}
+        workflow_refs = executable_uses_refs(workflow)
+        refs.extend(workflow_refs)
+        pending_local_refs.extend(
+            step["uses"]
+            for job in workflow.get("jobs", {}).values()
+            for step in job.get("steps", [])
+            if step.get("uses", "").startswith("./")
+        )
+
+    seen_local_refs: set[str] = set()
+    while pending_local_refs:
+        local_ref = pending_local_refs.pop()
+        if local_ref in seen_local_refs:
+            continue
+        seen_local_refs.add(local_ref)
+        action_dir = (repo_dir / local_ref[2:]).resolve()
+        try:
+            action_dir.relative_to(repo_dir.resolve())
+        except ValueError:
+            refs.append("__invalid_local_action__")
+            continue
+        manifests = [
+            path
+            for path in (action_dir / "action.yml", action_dir / "action.yaml")
+            if path.is_file()
+        ]
+        if len(manifests) != 1:
+            refs.append("__invalid_local_action__")
+            continue
+        action = yaml.safe_load(manifests[0].read_text(encoding="utf-8")) or {}
+        nested_refs = [
+            step["uses"] for step in action.get("runs", {}).get("steps", []) if "uses" in step
+        ]
+        refs.extend(nested_refs)
+        pending_local_refs.extend(ref for ref in nested_refs if ref.startswith("./"))
+    return refs
+
+
 def test_built_distribution_contract():
     """The wheel must preserve its runtime dependencies and HEIC path."""
     subprocess.run(
@@ -37,8 +107,9 @@ def test_public_release_helper_never_publishes():
     assert script.count('require_unpublished_version "$version"') >= 3
 
 
-def test_ci_security_and_tooling_are_fail_closed():
+def test_ci_security_and_tooling_are_fail_closed(tmp_path):
     """Required CI must not suppress findings or execute mutable action refs."""
+    mutable_revision = "@" + "main"
     workflow = yaml.safe_load(
         (REPO_DIR / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     )
@@ -51,21 +122,48 @@ def test_ci_security_and_tooling_are_fail_closed():
     assert "continue-on-error" not in security
     assert "continue-on-error" not in bandit_steps[0]
 
-    action_steps = []
-    for workflow_path in sorted((REPO_DIR / ".github" / "workflows").glob("*.yml")):
-        parsed = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
-        action_steps.extend(
-            step
-            for job in parsed.get("jobs", {}).values()
-            for step in job.get("steps", [])
-            if "uses" in step
-        )
-    assert action_steps
-    assert all(
-        len(step["uses"].rpartition("@")[2]) == 40
-        and all(character in "0123456789abcdef" for character in step["uses"].rpartition("@")[2])
-        for step in action_steps
+    yaml_workflow = tmp_path / "build.yaml"
+    yaml_workflow.write_text("jobs: {}\n", encoding="utf-8")
+    assert workflow_paths(tmp_path) == [yaml_workflow]
+    assert executable_uses_refs(
+        {
+            "jobs": {
+                "reusable": {"uses": "owner/repo/.github/workflows/build.yml" + mutable_revision}
+            }
+        }
+    ) == ["owner/repo/.github/workflows/build.yml" + mutable_revision]
+    assert uses_ref_is_immutable("./.github/actions/local")
+    assert uses_ref_is_immutable("docker://alpine" + "@sha256:" + ("a" * 64))
+    assert not uses_ref_is_immutable("actions/checkout" + mutable_revision)
+
+    action_refs = repository_uses_refs(REPO_DIR)
+    assert action_refs
+    assert all(uses_ref_is_immutable(ref) for ref in action_refs)
+
+    local_action_dir = tmp_path / ".github" / "actions" / "local"
+    local_action_dir.mkdir(parents=True)
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "build.yaml").write_text(
+        "jobs:\n  build:\n    steps:\n      - uses: ./.github/actions/local\n",
+        encoding="utf-8",
     )
+    (local_action_dir / "action.yml").write_text(
+        "runs:\n  using: composite\n  steps:\n    - uses: external/action@main\n",
+        encoding="utf-8",
+    )
+    assert not all(uses_ref_is_immutable(ref) for ref in repository_uses_refs(tmp_path))
+
+    reusable_workflow = workflow_dir / "reusable.yml"
+    reusable_workflow.write_text(
+        "on: workflow_call\njobs:\n  build:\n    steps: []\n",
+        encoding="utf-8",
+    )
+    (workflow_dir / "build.yaml").write_text(
+        "jobs:\n  build:\n    uses: ./.github/workflows/reusable.yml\n",
+        encoding="utf-8",
+    )
+    assert all(uses_ref_is_immutable(ref) for ref in repository_uses_refs(tmp_path))
 
 
 def test_public_tree_has_no_environment_metadata():
@@ -105,6 +203,8 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     checkout_action = "actions/checkout" + "@v4"
     git_url_key = "u" + "rl"
     git_pushurl_key = "push" + "url"
+    git_command = "g" + "it"
+    private_scp_remote = "private-host" + ":repo.git"
     windows_repo = "C:" + "\\repos\\private.git"
     escaped_windows_repo = "C:" + "\\\\repos\\\\private.git"
     for text in (
@@ -279,6 +379,8 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{sync_command} -e '{remote_command} -J private-jump' ./source example.com:/destination",
         f"{sync_command} --rsh='{remote_command} -o HostName=private-host' "
         "./source example.com:/destination",
+        f"{sync_command} --backup private-host:/path ./destination",
+        f"{sync_command} --partial private-host:/path ./destination",
         f"{sync_command} -e '{remote_command} -oProxyJump=private-jump' "
         "./source example.com:/destination",
         f"timeout 10 {sync_command} private-host:/private/path ./destination",
@@ -319,6 +421,75 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"remote.origin.{git_url_key} = [fd00::1]:repo.git",
         f"{git_url_key} = user" + "@private-host:repo.git",
         f'[submodule "private"]\n\t{git_url_key} = private-host:repo.git',
+        f"{git_command} clone private-host:repo.git",
+        f"/usr/bin/{git_command} ls-remote 192.168.1.20:repo.git",
+        f"sudo {git_command} remote add private private-host:repo.git",
+        f"{git_command} remote add --m private-host:repo.git public example.com:repo.git",
+        f"{git_command} remote add --mi public private-host:repo.git",
+        f"{git_command} remote add --tr main public private-host:repo.git",
+        f"run: {git_command} clone [fd00::1]:repo.git",
+        f"{git_command} clone --branch main private-host:repo.git",
+        f"{git_command} fetch --multiple example.com:one.git private-host:two.git",
+        f"{git_command} fetch --multi example.com:one.git private-host:two.git",
+        f"{git_command} fetch --multip example.com:one.git private-host:two.git",
+        f"{git_command} fetch -m example.com:one.git private-host:two.git",
+        f"{git_command} fetch -vm example.com:one.git private-host:two.git",
+        f"{git_command} fetch -mv example.com:one.git private-host:two.git",
+        f"{git_command} fetch -vqm example.com:one.git private-host:two.git",
+        f"{git_command} fetch -u private-host:repo.git main",
+        f"{git_command} fetch -o trace=1 private-host:repo.git",
+        f"{git_command} clone --server-option trace=1 private-host:repo.git",
+        f"{git_command} clone --server-op trace=1 private-host:repo.git",
+        f"{git_command} clone --ref-format files private-host:repo.git",
+        f"{git_command} fetch --server-op trace=1 private-host:repo.git",
+        f"{git_command} fetch --negotiation-include tip private-host:repo.git",
+        f"{git_command} fetch --negotiation-restrict tip private-host:repo.git",
+        f"{git_command} fetch --submodule-prefix path private-host:repo.git",
+        f"{git_command} fetch --recurse-submodules-default yes private-host:repo.git",
+        f"{git_command} fetch --r private-host:repo.git main",
+        f"{git_command} ls-remote --server-op trace=1 private-host:repo.git",
+        f"{git_command} pull --server-op trace=1 private-host:repo.git main",
+        f"{git_command} pull --c private-host:repo.git main",
+        f"{git_command} push --recurse-sub check private-host:repo.git main",
+        f"{git_command} push --push-op trace=1 private-host:repo.git main",
+        f"{git_command} push --p private-host:repo.git main",
+        f"{git_command} fetch --jobs 2 private-host:repo.git",
+        f"{git_command} pull --jobs private-host:repo.git main",
+        f"{git_command} pull -s recursive private-host:repo.git main",
+        f"{git_command} pull -X ours private-host:repo.git main",
+        f"{git_command} pull -o trace=1 private-host:repo.git main",
+        f"{git_command} pull --cleanup strip private-host:repo.git main",
+        f"{git_command} push -u private-host:repo.git main",
+        f"{git_command} push -o trace=1 private-host:repo.git main",
+        f"{git_command} push --recurse-submodules check private-host:repo.git main",
+        f"{git_command} push --repo=private-host:repo.git main",
+        f"{git_command} ls-remote -o trace=1 private-host:repo.git",
+        f"{git_command} archive --remote=private-host:repo.git main",
+        f"{git_command} submodule add private-host:repo.git vendor/private",
+        f"{git_command} submodule add --na local-name private-host:repo.git vendor/private",
+        f"{git_command} submodule add --refe ./local-ref private-host:repo.git vendor/private",
+        f"{git_command} submodule set-url vendor/private private-host:repo.git",
+        f"{git_command} config remote.origin.url private-host:repo.git",
+        f"{git_command} config --add remote.origin.pushurl private-host:repo.git",
+        f"{git_command} config --replace-all remote.origin.url private-host:repo.git '.*'",
+        f"{git_command} config -t string remote.origin.url private-host:repo.git",
+        f"{git_command} config --typ string remote.origin.url private-host:repo.git",
+        f"{git_command} config set --value '.*' remote.origin.url private-host:repo.git",
+        f"{git_command} config set --comment message remote.origin.url private-host:repo.git",
+        f"{git_command} -c remote.origin.url={private_scp_remote} fetch origin",
+        f"{git_command} -c url.private-host:repo.git.insteadOf=mirror clone mirror",
+        f"{git_command} -c url.private-host:repo.git.pushInsteadOf=mirror push mirror main",
+        f"{git_command} config url.private-host:repo.git.pushInsteadOf mirror",
+        f"{git_command} clone -c remote.origin.pushurl={private_scp_remote} example.com:repo.git",
+        f"{git_command} clone x:repo.git",
+        f"{git_command} clone x:org/repo.git",
+        f"{git_command} clone C:repos/private.git",
+        f"{git_command} fetch-pack private-host:repo.git main",
+        f"{git_command} fetch-pack --exec /usr/bin/git-upload-pack private-host:repo.git main",
+        f"{git_command} fetch-pack --shallow-since yesterday private-host:repo.git main",
+        f"{git_command} fetch-pack --shallow-exclude main private-host:repo.git main",
+        f"{git_command} send-pack private-host:repo.git main",
+        f"{git_command} send-pack --p private-host:repo.git main",
         f'Match exec "{remote_command} prod uptime"',
         f'Match exec="{remote_command} private-host"',
         f'Match exec = "{remote_command} private-host"',
@@ -482,6 +653,34 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         "insteadOf = private-host:repo.git",
         f"{git_url_key} = --upload-pack=private-host:repo.git",
         f"{git_url_key} = private-host",
+        f"Use {git_command} clone private-host:repo.git in this example.",
+        f"echo {git_command} clone private-host:repo.git",
+        f"{git_command} clone example.com:repo.git",
+        f"{git_command} clone C:/repos/private.git",
+        f"{git_command} clone C:\\repos\\private.git",
+        f"{git_command} clone 'C:\\repos\\private.git'",
+        f"{git_command} clone --template private-host:repo.git example.com:repo.git",
+        f"{git_command} clone -u private-host:helper example.com:repo.git",
+        f"{git_command} clone --server-option private-host:repo.git example.com:repo.git",
+        f"{git_command} ls-remote --upload-pack private-host:repo.git example.com:repo.git",
+        f"{git_command} ls-remote -o private-host:repo.git example.com:repo.git",
+        f"{git_command} fetch -o private-host:repo.git example.com:repo.git",
+        f"{git_command} fetch -u example.com:repo.git private-host:repo.git",
+        f"{git_command} fetch -om example.com:repo.git private-host:repo.git",
+        f"{git_command} fetch -jm example.com:repo.git private-host:repo.git",
+        f"{git_command} fetch -o -m example.com:repo.git private-host:branch",
+        f"{git_command} fetch --server-option -m example.com:repo.git private-host:branch",
+        f"{git_command} fetch -o --multiple example.com:repo.git private-host:branch",
+        f"{git_command} fetch --server-option --multiple example.com:repo.git private-host:branch",
+        f"{git_command} fetch --server-op private-host:repo.git example.com:repo.git",
+        f"{git_command} remote add --ma private-host:branch public example.com:repo.git",
+        f"{git_command} push --push-op private-host:repo.git example.com:repo.git main",
+        f"{git_command} pull -s private-host:repo.git example.com:repo.git main",
+        f"{git_command} push -o private-host:repo.git example.com:repo.git main",
+        f"{git_command} push -u example.com:repo.git main",
+        f"{git_command} archive main",
+        f"{git_command} show private-host:repo.git",
+        f"{git_command} clone " + public_clone_user + ":minghsuy/lazy-hsa.git",
         f'# Match exec "{remote_command} private-host"',
         f'Use Match exec "{remote_command} private-host" in config.',
         f'Match host exec "{remote_command} private-host"',

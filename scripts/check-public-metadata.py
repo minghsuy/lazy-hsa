@@ -31,6 +31,7 @@ SSH_COMMAND = "\x73\x73\x68"
 SCP_COMMAND = "\x73\x63\x70"
 SFTP_COMMAND = "\x73\x66\x74\x70"
 RSYNC_COMMAND = "\x72\x73\x79\x6e\x63"
+GIT_COMMAND = "\x67\x69\x74"
 FILE_URI_SCHEME = "\x66\x69\x6c\x65"
 STANDALONE_REMOTE_URI_SCHEMES = {
     SSH_COMMAND,
@@ -119,6 +120,353 @@ RSYNC_LONG_OPTIONS_WITH_ARGUMENT = {
     "zc",
     "zl",
 }
+GIT_GLOBAL_OPTIONS_WITH_ARGUMENT = {"C", "c"}
+GIT_GLOBAL_LONG_OPTIONS_WITH_ARGUMENT = {
+    "config-env",
+    "git-dir",
+    "namespace",
+    "super-prefix",
+    "work-tree",
+}
+GIT_REMOTE_OPTIONS_WITH_ARGUMENT = {
+    "archive": {"o"},
+    "clone": set("bcjou"),
+    "fetch": set("jo"),
+    "fetch-pack": set(),
+    "ls-remote": {"o"},
+    "pull": set("Xos"),
+    "push": {"o"},
+    "send-pack": set(),
+}
+GIT_REMOTE_LONG_OPTIONS_WITH_ARGUMENT = {
+    "archive": {
+        "add-file",
+        "add-virtual-file",
+        "exec",
+        "format",
+        "mtime",
+        "output",
+        "prefix",
+        "remote",
+    },
+    "clone": {
+        "branch",
+        "bundle-uri",
+        "config",
+        "depth",
+        "filter",
+        "jobs",
+        "origin",
+        "reference",
+        "reference-if-able",
+        "ref-format",
+        "revision",
+        "server-option",
+        "separate-git-dir",
+        "shallow-exclude",
+        "shallow-since",
+        "template",
+        "upload-pack",
+    },
+    "fetch": {
+        "depth",
+        "deepen",
+        "filter",
+        "jobs",
+        "negotiation-include",
+        "negotiation-restrict",
+        "negotiation-tip",
+        "recurse-submodules-default",
+        "server-option",
+        "refmap",
+        "shallow-exclude",
+        "shallow-since",
+        "submodule-prefix",
+        "upload-pack",
+    },
+    "fetch-pack": {
+        "deepen-not",
+        "deepen-since",
+        "depth",
+        "exec",
+        "server-option",
+        "shallow-exclude",
+        "shallow-since",
+        "upload-pack",
+    },
+    "ls-remote": {"server-option", "sort", "upload-pack"},
+    "pull": {
+        "cleanup",
+        "depth",
+        "deepen",
+        "filter",
+        "negotiation-tip",
+        "server-option",
+        "shallow-exclude",
+        "shallow-since",
+        "strategy",
+        "strategy-option",
+        "upload-pack",
+    },
+    "push": {
+        "exec",
+        "push-option",
+        "receive-pack",
+        "recurse-submodules",
+        "repo",
+    },
+    "send-pack": {"exec", "push-option", "receive-pack", "remote"},
+}
+GIT_REMOTE_LONG_FLAGS = {
+    "archive": {"list", "verbose", "worktree-attributes"},
+    "clone": {
+        "also-filter-submodules",
+        "bare",
+        "checkout",
+        "dissociate",
+        "hardlinks",
+        "ipv4",
+        "ipv6",
+        "local",
+        "mirror",
+        "no-checkout",
+        "no-hardlinks",
+        "no-tags",
+        "progress",
+        "quiet",
+        "recursive",
+        "recurse-submodules",
+        "reject-shallow",
+        "remote-submodules",
+        "shared",
+        "shallow-submodules",
+        "single-branch",
+        "sparse",
+        "tags",
+        "verbose",
+    },
+    "fetch": {
+        "all",
+        "append",
+        "atomic",
+        "auto-gc",
+        "auto-maintenance",
+        "dry-run",
+        "force",
+        "ipv4",
+        "ipv6",
+        "keep",
+        "multiple",
+        "negotiate-only",
+        "porcelain",
+        "prefetch",
+        "progress",
+        "prune",
+        "prune-tags",
+        "quiet",
+        "recurse-submodules",
+        "refetch",
+        "set-upstream",
+        "show-forced-updates",
+        "stdin",
+        "tags",
+        "unshallow",
+        "update-head-ok",
+        "update-shallow",
+        "verbose",
+        "write-commit-graph",
+        "write-fetch-head",
+    },
+    "fetch-pack": {
+        "all",
+        "diag-url",
+        "include-tag",
+        "keep",
+        "no-progress",
+        "quiet",
+        "stdin",
+        "thin",
+        "verbose",
+    },
+    "ls-remote": {
+        "exit-code",
+        "get-url",
+        "heads",
+        "quiet",
+        "refs",
+        "symref",
+        "tags",
+    },
+    "pull": {
+        "all",
+        "allow-unrelated-histories",
+        "append",
+        "autostash",
+        "commit",
+        "dry-run",
+        "edit",
+        "ff",
+        "ff-only",
+        "force",
+        "gpg-sign",
+        "ipv4",
+        "ipv6",
+        "jobs",
+        "keep",
+        "log",
+        "progress",
+        "prune",
+        "quiet",
+        "rebase",
+        "recurse-submodules",
+        "set-upstream",
+        "show-forced-updates",
+        "signoff",
+        "squash",
+        "stat",
+        "tags",
+        "unshallow",
+        "update-shallow",
+        "verbose",
+        "verify",
+        "verify-signatures",
+    },
+    "push": {
+        "all",
+        "atomic",
+        "branches",
+        "delete",
+        "dry-run",
+        "follow-tags",
+        "force",
+        "force-if-includes",
+        "force-with-lease",
+        "ipv4",
+        "ipv6",
+        "mirror",
+        "porcelain",
+        "progress",
+        "prune",
+        "set-upstream",
+        "signed",
+        "tags",
+        "thin",
+        "verbose",
+        "verify",
+    },
+    "send-pack": {
+        "all",
+        "atomic",
+        "dry-run",
+        "force",
+        "force-if-includes",
+        "force-with-lease",
+        "helper-status",
+        "mirror",
+        "progress",
+        "signed",
+        "stateless-rpc",
+        "stdin",
+        "thin",
+        "verbose",
+    },
+}
+for _subcommand, _flags in GIT_REMOTE_LONG_FLAGS.items():
+    _flags.update(
+        f"no-{option}"
+        for option in _flags | GIT_REMOTE_LONG_OPTIONS_WITH_ARGUMENT[_subcommand]
+        if not option.startswith("no-")
+    )
+GIT_REMOTE_SUBCOMMANDS = set(GIT_REMOTE_OPTIONS_WITH_ARGUMENT)
+GIT_REMOTE_MANAGEMENT_OPTIONS_WITH_ARGUMENT = set("mt")
+GIT_REMOTE_MANAGEMENT_LONG_OPTIONS_WITH_ARGUMENT = {"master", "track"}
+GIT_REMOTE_MANAGEMENT_LONG_FLAGS = {
+    "add",
+    "delete",
+    "fetch",
+    "mirror",
+    "no-fetch",
+    "no-mirror",
+    "no-tags",
+    "push",
+    "tags",
+}
+GIT_SUBMODULE_OPTIONS_WITH_ARGUMENT = {"b"}
+GIT_SUBMODULE_LONG_OPTIONS_WITH_ARGUMENT = {
+    "branch",
+    "depth",
+    "filter",
+    "name",
+    "reference",
+    "ref-format",
+}
+GIT_SUBMODULE_LONG_FLAGS = {
+    "all",
+    "cached",
+    "checkout",
+    "default",
+    "files",
+    "force",
+    "init",
+    "merge",
+    "no-fetch",
+    "no-recommend-shallow",
+    "no-single-branch",
+    "quiet",
+    "rebase",
+    "recommend-shallow",
+    "recursive",
+    "remote",
+    "single-branch",
+}
+GIT_CONFIG_OPTIONS_WITH_ARGUMENT = {"f", "t"}
+GIT_CONFIG_LONG_OPTIONS_WITH_ARGUMENT = {
+    "blob",
+    "comment",
+    "default",
+    "file",
+    "type",
+    "value",
+}
+GIT_CONFIG_LONG_FLAGS = {
+    "add",
+    "all",
+    "append",
+    "bool",
+    "bool-or-int",
+    "bool-or-str",
+    "edit",
+    "expiry-date",
+    "fixed-value",
+    "get",
+    "get-all",
+    "get-color",
+    "get-colorbool",
+    "get-regexp",
+    "get-urlmatch",
+    "global",
+    "includes",
+    "int",
+    "list",
+    "local",
+    "name-only",
+    "null",
+    "path",
+    "remove-section",
+    "rename-section",
+    "replace-all",
+    "show-origin",
+    "show-scope",
+    "system",
+    "unset",
+    "unset-all",
+    "worktree",
+}
+GIT_CONFIG_LONG_FLAGS.update(
+    f"no-{option}"
+    for option in GIT_CONFIG_LONG_FLAGS | GIT_CONFIG_LONG_OPTIONS_WITH_ARGUMENT
+    if not option.startswith("no-")
+)
 ENDPOINT_BEARING_OPTIONS = {"J", "L", "R", "W", "o"}
 NETCAT_COMMANDS = {"nc", "ncat", "netcat"}
 NETCAT_OPTIONS_WITH_ARGUMENT = set("ceIiMmOPpqsTVwXx")
@@ -127,6 +475,7 @@ SHELL_OPTIONS_WITH_ARGUMENT = {"c", "O", "o"}
 SHELL_LONG_OPTIONS_WITH_ARGUMENT = {"init-file", "rcfile"}
 INLINE_YAML_COMMAND = re.compile(r"^\s*(?:-\s*)?(?:run|command|entrypoint|script)\s*:\s*(.*?)\s*$")
 ANSI_C_QUOTED = re.compile(r"\$'((?:\\.|[^'\\])*)'")
+BARE_WINDOWS_SHELL_PATH = re.compile(r"(?<!\S)([A-Za-z]:\\[^\s;&|()]+)")
 RAW_GIT_URL_ASSIGNMENT = re.compile(
     r"^\s*(?:[A-Z0-9_.-]+\.)?(?:url|pushurl)\s*=\s*(.*)$",
     re.IGNORECASE,
@@ -299,6 +648,10 @@ def shell_tokens(line: str) -> list[str]:
         return shlex.quote(body)
 
     normalized = ANSI_C_QUOTED.sub(replace_ansi_c_quote, line)
+    normalized = BARE_WINDOWS_SHELL_PATH.sub(
+        lambda match: shlex.quote(match.group(1)),
+        normalized,
+    )
     try:
         lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()")
         lexer.commenters = ""
@@ -376,6 +729,8 @@ def parse_openssh_arguments(
     long_options_with_argument: set[str] | None = None,
     *,
     options_after_operands: bool = False,
+    flags_out: list[str] | None = None,
+    long_flags: set[str] | None = None,
 ) -> tuple[list[tuple[str, int]], list[tuple[str, str]]]:
     """Parse operands and option arguments for a shell command."""
     operands: list[tuple[str, int]] = []
@@ -393,6 +748,13 @@ def parse_openssh_arguments(
         if options_enabled and token.startswith("-") and token != "-":
             if token.startswith("--") and long_options_with_argument is not None:
                 name, separator, attached_argument = token[2:].partition("=")
+                known_long_options = long_options_with_argument | (long_flags or set())
+                if long_flags is not None and name not in known_long_options:
+                    prefix_matches = {
+                        option for option in known_long_options if option.startswith(name)
+                    }
+                    if len(prefix_matches) == 1:
+                        name = prefix_matches.pop()
                 if name in long_options_with_argument:
                     if separator:
                         option_arguments.append((name, attached_argument))
@@ -406,11 +768,15 @@ def parse_openssh_arguments(
                     }:
                         index += 1
                         option_arguments.append((name, tokens[index]))
+                elif flags_out is not None:
+                    flags_out.append(name)
                 index += 1
                 continue
             option_cluster = token[1:]
             for option_index, option in enumerate(option_cluster):
                 if option not in options_with_argument:
+                    if flags_out is not None:
+                        flags_out.append(option)
                     continue
                 attached_argument = option_cluster[option_index + 1 :]
                 if attached_argument:
@@ -905,7 +1271,7 @@ def has_disallowed_git_scp_url(text: str) -> bool:
             raw_value = raw_assignment.group(1).lstrip()
             if raw_value.startswith(("'", '"')):
                 raw_value = raw_value[1:]
-            if re.match(r"^[A-Za-z]:[\\/]", raw_value):
+            if git_value_is_windows_path(raw_value):
                 continue
         tokens = config_tokens(line)
         if not tokens:
@@ -919,13 +1285,157 @@ def has_disallowed_git_scp_url(text: str) -> bool:
         if not values:
             continue
         remote = values[0]
-        if PUBLIC_GITHUB_SSH_CLONE.fullmatch(remote):
-            continue
-        if re.match(r"^[A-Za-z]:[\\/]", remote):
-            continue
-        host = scp_remote_host(remote)
-        if host is not None and remote.rpartition(":")[2] and remote_host_is_disallowed(host):
+        if git_scp_remote_is_disallowed(remote):
             return True
+    return False
+
+
+def git_value_is_windows_path(value: str) -> bool:
+    """Recognize absolute Windows drive paths without hiding scp-like URLs."""
+    return bool(re.match(r"^[A-Za-z]:[\\/]", value))
+
+
+def git_scp_remote_is_disallowed(remote: str) -> bool:
+    """Classify one Git remote while preserving Windows drive-local paths."""
+    if PUBLIC_GITHUB_SSH_CLONE.fullmatch(remote) or git_value_is_windows_path(remote):
+        return False
+    host = scp_remote_host(remote)
+    return bool(host is not None and remote.rpartition(":")[2] and remote_host_is_disallowed(host))
+
+
+def git_config_key_value_remotes(key: str, value: str) -> list[str]:
+    """Extract endpoint values and URL rewrite bases from one Git config pair."""
+    lowered = key.lower()
+    if lowered.rsplit(".", maxsplit=1)[-1] in {"url", "pushurl"}:
+        return [value]
+    for suffix in (".insteadof", ".pushinsteadof"):
+        if lowered.startswith("url.") and lowered.endswith(suffix):
+            return [key[4 : -len(suffix)]]
+    return []
+
+
+def git_config_assignment_remotes(argument: str) -> list[str]:
+    """Extract endpoint-bearing values from a Git ``-c key=value`` argument."""
+    key, separator, value = argument.partition("=")
+    return git_config_key_value_remotes(key, value) if separator else []
+
+
+def git_command_remote_operands(tokens: list[str], command_index: int) -> list[str]:
+    """Return positional remote operands for network-bearing Git subcommands."""
+    global_operands, global_option_arguments = parse_openssh_arguments(
+        tokens,
+        command_index,
+        GIT_GLOBAL_OPTIONS_WITH_ARGUMENT,
+        GIT_GLOBAL_LONG_OPTIONS_WITH_ARGUMENT,
+    )
+    config_remotes = [
+        remote
+        for option, argument in global_option_arguments
+        if option == "c"
+        for remote in git_config_assignment_remotes(argument)
+    ]
+    if not global_operands:
+        return config_remotes
+    subcommand, subcommand_index = global_operands[0]
+    subcommand = subcommand.rsplit("/", maxsplit=1)[-1]
+    if subcommand in GIT_REMOTE_SUBCOMMANDS:
+        parsed_flags: list[str] = []
+        operands, option_arguments = parse_openssh_arguments(
+            tokens,
+            subcommand_index,
+            GIT_REMOTE_OPTIONS_WITH_ARGUMENT[subcommand],
+            GIT_REMOTE_LONG_OPTIONS_WITH_ARGUMENT[subcommand],
+            options_after_operands=True,
+            flags_out=parsed_flags,
+            long_flags=GIT_REMOTE_LONG_FLAGS[subcommand],
+        )
+        explicit_remote_options = {
+            "archive": {"remote"},
+            "push": {"repo"},
+        }.get(subcommand, set())
+        explicit_remotes = [
+            argument for option, argument in option_arguments if option in explicit_remote_options
+        ]
+        config_remotes.extend(
+            remote
+            for option, argument in option_arguments
+            if option in {"c", "config"}
+            for remote in git_config_assignment_remotes(argument)
+        )
+        if explicit_remotes:
+            return config_remotes + explicit_remotes
+        if subcommand == "archive":
+            return config_remotes
+        if subcommand == "fetch" and any(flag in {"m", "multiple"} for flag in parsed_flags):
+            return config_remotes + [operand for operand, _ in operands]
+        return config_remotes + ([operands[0][0]] if operands else [])
+    if subcommand == "remote":
+        parsed_flags = []
+        operands, _ = parse_openssh_arguments(
+            tokens,
+            subcommand_index,
+            GIT_REMOTE_MANAGEMENT_OPTIONS_WITH_ARGUMENT,
+            GIT_REMOTE_MANAGEMENT_LONG_OPTIONS_WITH_ARGUMENT,
+            options_after_operands=True,
+            flags_out=parsed_flags,
+            long_flags=GIT_REMOTE_MANAGEMENT_LONG_FLAGS,
+        )
+        if len(operands) >= 3 and operands[0][0] in {"add", "set-url"}:
+            if any(flag not in GIT_REMOTE_MANAGEMENT_LONG_FLAGS for flag in parsed_flags):
+                return [operand for operand, _ in operands[1:]]
+            return [operands[2][0]]
+    if subcommand == "submodule":
+        parsed_flags = []
+        operands, _ = parse_openssh_arguments(
+            tokens,
+            subcommand_index,
+            GIT_SUBMODULE_OPTIONS_WITH_ARGUMENT,
+            GIT_SUBMODULE_LONG_OPTIONS_WITH_ARGUMENT,
+            options_after_operands=True,
+            flags_out=parsed_flags,
+            long_flags=GIT_SUBMODULE_LONG_FLAGS,
+        )
+        if len(operands) >= 2 and operands[0][0] == "add":
+            if any(flag not in GIT_SUBMODULE_LONG_FLAGS for flag in parsed_flags):
+                return config_remotes + [operand for operand, _ in operands[1:]]
+            return config_remotes + [operands[1][0]]
+        if len(operands) >= 3 and operands[0][0] == "set-url":
+            return config_remotes + [operands[2][0]]
+    if subcommand == "config":
+        parsed_flags = []
+        operands, _ = parse_openssh_arguments(
+            tokens,
+            subcommand_index,
+            GIT_CONFIG_OPTIONS_WITH_ARGUMENT,
+            GIT_CONFIG_LONG_OPTIONS_WITH_ARGUMENT,
+            options_after_operands=True,
+            flags_out=parsed_flags,
+            long_flags=GIT_CONFIG_LONG_FLAGS,
+        )
+        if len(operands) >= 2:
+            if any(flag not in GIT_CONFIG_LONG_FLAGS for flag in parsed_flags):
+                return config_remotes + [operand for operand, _ in operands]
+            key_index = 1 if operands[0][0] in {"add", "replace-all", "set"} else 0
+            if len(operands) > key_index + 1:
+                config_remotes.extend(
+                    git_config_key_value_remotes(operands[key_index][0], operands[key_index + 1][0])
+                )
+    return config_remotes
+
+
+def has_disallowed_git_command_scp_url(text: str) -> bool:
+    """Reject scp-like endpoints passed to a Git command in shell position."""
+    for tokens in command_token_sequences(text):
+        for index, token in enumerate(tokens):
+            if token.rsplit("/", maxsplit=1)[-1] != GIT_COMMAND or not ssh_is_in_command_position(
+                tokens, index
+            ):
+                continue
+            if any(
+                git_scp_remote_is_disallowed(remote)
+                for remote in git_command_remote_operands(tokens, index)
+            ):
+                return True
     return False
 
 
@@ -1149,6 +1659,7 @@ def metadata_categories(text: str) -> list[str]:
         has_disallowed_user_at_host_identifier(text, allowed_refs)
         or has_disallowed_remote_uri(text, allowed_refs)
         or has_disallowed_git_scp_url(text)
+        or has_disallowed_git_command_scp_url(text)
         or has_disallowed_openssh_config_endpoint(text)
         or has_disallowed_openssh_match_exec(text)
         or has_ssh_command_without_user(text)
