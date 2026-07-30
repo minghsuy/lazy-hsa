@@ -27,7 +27,7 @@ dependencies = [
     "imapclient>=3.0.0",
     "email-validator>=2.2.0",
     # Image/PDF handling
-    "Pillow>=12.1.1",
+    "Pillow>=12.2.0",
     "pdf2image>=1.17.0",
     "pypdf>=6.10.2",  # Security: fix malformed PDF DoS
     # Web scraping for portals (future)
@@ -43,7 +43,7 @@ dependencies = [
     # Data handling
     "pandas>=2.2.0",
     "openpyxl>=3.1.0",
-    "pillow>=12.2.0",
+    "pillow-heif>=1.1.1",
     "pdfplumber>=0.11.9",
     # Security: explicit version constraints for transitive dependencies
     "urllib3>=2.6.3",  # Fix decompression bomb bypass
@@ -53,6 +53,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "packaging>=25.0",
     "ruff>=0.8.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
