@@ -72,6 +72,14 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} private-host # uses actions/checkout@v4",
         f"{remote_command} prod uptime",
         f"{remote_command} backuphost is",
+        remote_command + " owner/user" + "@private-host",
+        remote_command + " owner/user" + "@192.168.1.20",
+        f"timeout 10 {remote_command} private-host",
+        f"timeout --signal=TERM 10 {remote_command} private-host",
+        f"nohup {remote_command} private-host",
+        f"nice -n 5 {remote_command} private-host",
+        f"timeout 10 {remote_command} -J private-jump example.com",
+        f"/usr/bin/timeout 10 /usr/bin/{remote_command} private-host",
         f"sudo {remote_command} private-host",
         f"command {remote_command} private-host",
         f"env {remote_command} private-host",
@@ -181,6 +189,10 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{remote_command} host.example.com",
         f"{remote_command} ssh://example.com",
         f"{remote_command} ssh://host.example.com",
+        remote_command + " owner/user" + "@example.com",
+        f"timeout 10 {remote_command} example.com",
+        f"nohup {remote_command} example.com",
+        f"nice -n 5 {remote_command} example.com",
         f"{remote_command} -J example.com example.com",
         f"{remote_command} -W example.com:443 example.com",
         f"{remote_command} -W %h:%p example.com",
@@ -221,6 +233,9 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         "uses: owner/action@0123456789abcdef0123456789abcdef01234567"
     )
     assert "direct SSH machine endpoint" not in categories("dependency: npm/pico@2")
+    assert "direct SSH machine endpoint" not in categories(
+        "dependency: owner/user" + "@private-host"
+    )
     assert "direct SSH machine endpoint" not in categories("npm install package@latest")
     assert "direct SSH machine endpoint" not in categories("npm install --save package@latest")
     assert "direct SSH machine endpoint" not in categories("npm install package@2.1.0")

@@ -252,12 +252,17 @@ def consume_wrapper_options(prefix: list[str], index: int, wrapper: str) -> int 
     return index
 
 
-def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
-    """Recognize shell prefixes without mistaking ordinary prose for a command."""
+def shell_command_prefix(tokens: list[str], command_index: int) -> list[str]:
+    """Return tokens between the nearest shell boundary and a command."""
     start = command_index - 1
     while start >= 0 and tokens[start] not in SSH_COMMAND_PREDECESSORS:
         start -= 1
-    prefix = tokens[start + 1 : command_index]
+    return tokens[start + 1 : command_index]
+
+
+def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
+    """Recognize shell prefixes without mistaking ordinary prose for a command."""
+    prefix = shell_command_prefix(tokens, command_index)
     if not prefix:
         return True
     index = 0
@@ -274,6 +279,23 @@ def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
         while index < len(prefix) and SHELL_ASSIGNMENT.fullmatch(prefix[index]):
             index += 1
     return True
+
+
+def clear_ssh_endpoint_is_actionable(
+    tokens: list[str],
+    command_index: int,
+    in_command_position: bool,
+) -> bool:
+    """Keep clear endpoints fail-closed without overriding known prose/invalid wrappers."""
+    if in_command_position:
+        return True
+    prefix = shell_command_prefix(tokens, command_index)
+    if not prefix:
+        return True
+    first = prefix[0].rsplit("/", maxsplit=1)[-1]
+    if first in SSH_COMMAND_WRAPPERS:
+        return False
+    return not first[:1].isupper()
 
 
 def single_label_destination_is_unambiguous(
@@ -486,35 +508,42 @@ def has_ssh_command_without_user(text: str) -> bool:
         for index, token in enumerate(tokens):
             if token.rsplit("/", maxsplit=1)[-1] != SSH_COMMAND:
                 continue
-            if not ssh_is_in_command_position(tokens, index):
-                continue
+            in_command_position = ssh_is_in_command_position(tokens, index)
+            clear_endpoint_is_actionable = clear_ssh_endpoint_is_actionable(
+                tokens,
+                index,
+                in_command_position,
+            )
             operands, option_arguments = parse_openssh_arguments(
                 tokens,
                 index,
                 SSH_OPTIONS_WITH_ARGUMENT,
             )
-            if has_disallowed_option_endpoint(option_arguments):
+            if clear_endpoint_is_actionable and has_disallowed_option_endpoint(option_arguments):
                 return True
             if not operands:
                 continue
             destination, destination_index = operands[0]
-            if "@" in destination:
-                continue
             uri_destination = uri_host(destination, "ssh")
-            if uri_destination is not None:
-                if remote_host_is_disallowed(uri_destination):
-                    return True
+            host = (
+                uri_destination
+                if uri_destination is not None
+                else endpoint_authority_host(destination)
+            )
+            if host is None or not remote_host_is_disallowed(host):
                 continue
-            if not remote_host_is_disallowed(destination):
-                continue
-            if HOSTLIKE_SSH_DESTINATION.fullmatch(destination):
+            if clear_endpoint_is_actionable and (
+                uri_destination is not None or HOSTLIKE_SSH_DESTINATION.fullmatch(host)
+            ):
                 return True
-            if SINGLE_LABEL_SSH_DESTINATION.fullmatch(
-                destination
-            ) and single_label_destination_is_unambiguous(
-                tokens,
-                index,
-                destination_index,
+            if (
+                in_command_position
+                and SINGLE_LABEL_SSH_DESTINATION.fullmatch(host)
+                and single_label_destination_is_unambiguous(
+                    tokens,
+                    index,
+                    destination_index,
+                )
             ):
                 return True
     return False
