@@ -182,6 +182,8 @@ def test_public_metadata_guard_has_bounded_context_free_rules():
     private_contact = "person" + "@private.test"
     assert "non-example email address" in categories(private_contact)
     assert "non-example email address" not in categories("person@example.com")
+    contact_in_url = "https://intranet.example/users/person" + "@company.com"
+    assert "non-example email address" in categories(contact_in_url)
 
     for home in (
         "/" + "home/private-user/config",

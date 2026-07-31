@@ -29,13 +29,32 @@ USER_AT_HOST_PATTERN = re.compile(
     r"(?![A-Z0-9._-])",
     re.IGNORECASE,
 )
-REFERENCE_PATTERN = re.compile(
-    r"(?:"
-    r"(?:[A-Z0-9_.-]+/)+[A-Z0-9_.-]+\x40[A-Z0-9._/-]+"
-    r"|[A-Z0-9_.-]+-action\x40[A-Z0-9._/-]+"
-    r"|(?:ssh://)?git\x40github\.com[:/]minghsuy/lazy-hsa(?:\.git)?"
-    r")",
-    re.IGNORECASE,
+REFERENCE_PATTERNS = (
+    re.compile(
+        r"\buses:\s*(?:[A-Z0-9_.-]+/)+[A-Z0-9_.-]+\x40[A-Z0-9._/-]+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?<![A-Z0-9._/-])[A-Z0-9_.-]+/[A-Z0-9_.-]+\x40"
+        r"(?:v?[0-9]+(?:\.[0-9]+)*(?:[-+][A-Z0-9.-]+)?|[A-F0-9]{40})"
+        r"(?:/[A-Z0-9._/-]+)?(?![A-Z0-9._/-])",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?<![A-Z0-9._/-])[A-Z0-9_.-]+-action\x40"
+        r"(?:v?[0-9]+(?:\.[0-9]+)*(?:[-+][A-Z0-9.-]+)?|[A-F0-9]{40})"
+        r"(?![A-Z0-9._/-])",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"https://cdn\.jsdelivr\.net/npm/"
+        r"(?:\x40[A-Z0-9_.-]+/)?[A-Z0-9_.-]+\x40[A-Z0-9._/-]+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:ssh://)?git\x40github\.com[:/]minghsuy/lazy-hsa(?:\.git)?",
+        re.IGNORECASE,
+    ),
 )
 ABSOLUTE_USER_HOME_PATTERN = re.compile(
     r"(?:(?<![A-Z0-9._:/-])(?:/Users|/home)/[A-Z0-9._-]+"
@@ -55,7 +74,7 @@ PRIVATE_GITHUB_REPOSITORY_PATTERN = re.compile(
 
 def allowed_reference_spans(text: str) -> tuple[tuple[int, int], ...]:
     """Return spans where ``@`` is part of a package, action, or public clone."""
-    return tuple(match.span() for match in REFERENCE_PATTERN.finditer(text))
+    return tuple(match.span() for pattern in REFERENCE_PATTERNS for match in pattern.finditer(text))
 
 
 def is_allowed_reference(
