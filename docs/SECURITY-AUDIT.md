@@ -23,4 +23,6 @@ assess history remediation without copying the value into a public issue.
 `scripts/check-public-metadata.py` now rejects environment-specific repository
 targets, absolute user-home paths, direct SSH machine endpoints, and
 non-example email addresses. The default test suite runs this guard so it cannot
-become an optional release check.
+become an optional release check. The guard intentionally matches high-signal
+tokens without interpreting shell, OpenSSH, Git, or environment syntax;
+transport-aware scanning is separate design work tracked in issue #8.

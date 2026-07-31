@@ -149,7 +149,8 @@ The `Is Authoritative` column in the master spreadsheet controls which records c
   prepare, or attest an exact merged public release candidate; they never push,
   tag, or publish.
 - `scripts/check-public-metadata.py` — rejects environment-specific repository,
-  path, SSH endpoint, and contact metadata from the public tree.
+  path, user-at-host, and contact metadata from the staged public tree. It is a
+  context-free recurrence guard, not a shell or transport parser (see issue #8).
 
 ### Running with Poppler (for PDF processing)
 ```bash
