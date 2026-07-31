@@ -178,6 +178,9 @@ def test_public_metadata_guard_has_bounded_context_free_rules():
     assert "direct SSH machine endpoint" not in categories(
         "git" + "@github.com:minghsuy/lazy-hsa.git"
     )
+    assert "direct SSH machine endpoint" in categories(
+        "git" + "@github.com:minghsuy/lazy-hsa-private.git"
+    )
 
     private_contact = "person" + "@private.test"
     assert "non-example email address" in categories(private_contact)

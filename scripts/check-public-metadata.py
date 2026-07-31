@@ -52,7 +52,8 @@ REFERENCE_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:ssh://)?git\x40github\.com[:/]minghsuy/lazy-hsa(?:\.git)?",
+        r"(?:ssh://)?git\x40github\.com[:/]minghsuy/lazy-hsa(?:\.git)?"
+        r"(?![A-Z0-9._/-])",
         re.IGNORECASE,
     ),
 )
