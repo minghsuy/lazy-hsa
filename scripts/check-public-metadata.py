@@ -476,6 +476,7 @@ SHELL_LONG_OPTIONS_WITH_ARGUMENT = {"init-file", "rcfile"}
 INLINE_YAML_COMMAND = re.compile(r"^\s*(?:-\s*)?(?:run|command|entrypoint|script)\s*:\s*(.*?)\s*$")
 ANSI_C_QUOTED = re.compile(r"\$'((?:\\.|[^'\\])*)'")
 BARE_WINDOWS_SHELL_PATH = re.compile(r"(?<!\S)([A-Za-z]:\\[^\s;&|()]+)")
+CONFIG_ASSIGNMENT = re.compile(r"^\s*([^#\s=]+)\s*=\s*(.*)$")
 RAW_GIT_URL_ASSIGNMENT = re.compile(
     r"^\s*(?:[A-Z0-9_.-]+\.)?(?:url|pushurl)\s*=\s*(.*)$",
     re.IGNORECASE,
@@ -515,6 +516,17 @@ WRAPPER_LONG_OPTIONS_WITH_ARGUMENT = {
         "user",
     },
 }
+ENV_LONG_OPTIONS = WRAPPER_LONG_OPTIONS_WITH_ARGUMENT["env"] | {
+    "block-signal",
+    "debug",
+    "default-signal",
+    "help",
+    "ignore-environment",
+    "ignore-signal",
+    "list-signal-handling",
+    "null",
+    "version",
+}
 HOSTLIKE_SSH_DESTINATION = re.compile(
     r"(?:"
     r"\[[0-9A-F:.%_-]+\]|"
@@ -525,7 +537,8 @@ HOSTLIKE_SSH_DESTINATION = re.compile(
     re.IGNORECASE,
 )
 SINGLE_LABEL_SSH_DESTINATION = re.compile(r"[A-Z0-9][A-Z0-9-]*", re.IGNORECASE)
-SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*")
+SIMPLE_SHELL_REDIRECTION = re.compile(r"(?<!\S)(?:\d+)?(?:>>?|<<?)[A-Za-z0-9_./%+,:=@-]+")
 CONTEXTUAL_PACKAGE_REFS = (
     re.compile(
         r"`[A-Z0-9_.-]+/[A-Z0-9_.-]+\x40[A-Z0-9._/-]+`",
@@ -637,6 +650,29 @@ def has_disallowed_user_at_host_identifier(
     return False
 
 
+class ShellRedirectionToken(str):
+    """Tagged bounded redirection whose raw quote provenance is known."""
+
+
+def mark_simple_shell_redirections(
+    line: str,
+) -> tuple[str, dict[str, ShellRedirectionToken]]:
+    """Replace unquoted attached redirections with collision-free markers."""
+    markers: dict[str, ShellRedirectionToken] = {}
+    marker_index = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal marker_index
+        while True:
+            marker_index += 1
+            marker = f"__lazy_hsa_simple_redirection_{marker_index}__"
+            if marker not in line and marker not in markers:
+                markers[marker] = ShellRedirectionToken(match.group(0))
+                return marker
+
+    return SIMPLE_SHELL_REDIRECTION.sub(replace, line), markers
+
+
 def shell_tokens(line: str) -> list[str]:
     """Tokenize shell punctuation while retaining a fail-closed fallback."""
 
@@ -652,13 +688,17 @@ def shell_tokens(line: str) -> list[str]:
         lambda match: shlex.quote(match.group(1)),
         normalized,
     )
+    normalized, redirection_markers = mark_simple_shell_redirections(normalized)
     try:
         lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()")
         lexer.commenters = ""
         lexer.whitespace_split = True
-        return list(lexer)
+        return [redirection_markers.get(token, token) for token in lexer]
     except ValueError:
-        return re.findall(r"&&|\|\||[;&|()]|[^\s;&|()]+", normalized)
+        return [
+            redirection_markers.get(token, token)
+            for token in re.findall(r"&&|\|\||[;&|()]|[^\s;&|()]+", normalized)
+        ]
 
 
 def config_tokens(line: str) -> list[str]:
@@ -670,6 +710,16 @@ def config_tokens(line: str) -> list[str]:
         return list(lexer)
     except ValueError:
         return []
+
+
+def config_key_values(line: str) -> tuple[str, list[str]] | None:
+    """Normalize optional equals spacing in one OpenSSH or Git assignment."""
+    assignment = CONFIG_ASSIGNMENT.fullmatch(line)
+    if assignment is not None:
+        values = config_tokens(assignment.group(2))
+        return assignment.group(1), values
+    tokens = config_tokens(line)
+    return (tokens[0], tokens[1:]) if tokens else None
 
 
 def openssh_match_exec_commands(text: str) -> list[str]:
@@ -731,6 +781,7 @@ def parse_openssh_arguments(
     options_after_operands: bool = False,
     flags_out: list[str] | None = None,
     long_flags: set[str] | None = None,
+    option_events_out: list[tuple[str, str | None]] | None = None,
 ) -> tuple[list[tuple[str, int]], list[tuple[str, str]]]:
     """Parse operands and option arguments for a shell command."""
     operands: list[tuple[str, int]] = []
@@ -758,6 +809,8 @@ def parse_openssh_arguments(
                 if name in long_options_with_argument:
                     if separator:
                         option_arguments.append((name, attached_argument))
+                        if option_events_out is not None:
+                            option_events_out.append((name, attached_argument))
                     elif index + 1 < len(tokens) and tokens[index + 1] not in {
                         ";",
                         "&&",
@@ -768,8 +821,16 @@ def parse_openssh_arguments(
                     }:
                         index += 1
                         option_arguments.append((name, tokens[index]))
+                        if option_events_out is not None:
+                            option_events_out.append((name, tokens[index]))
+                    elif option_events_out is not None:
+                        option_events_out.append((name, None))
                 elif flags_out is not None:
                     flags_out.append(name)
+                    if option_events_out is not None:
+                        option_events_out.append((name, None))
+                elif option_events_out is not None:
+                    option_events_out.append((name, None))
                 index += 1
                 continue
             option_cluster = token[1:]
@@ -777,10 +838,14 @@ def parse_openssh_arguments(
                 if option not in options_with_argument:
                     if flags_out is not None:
                         flags_out.append(option)
+                    if option_events_out is not None:
+                        option_events_out.append((option, None))
                     continue
                 attached_argument = option_cluster[option_index + 1 :]
                 if attached_argument:
                     option_arguments.append((option, attached_argument))
+                    if option_events_out is not None:
+                        option_events_out.append((option, attached_argument))
                 elif index + 1 < len(tokens) and tokens[index + 1] not in {
                     ";",
                     "&&",
@@ -791,6 +856,10 @@ def parse_openssh_arguments(
                 }:
                     index += 1
                     option_arguments.append((option, tokens[index]))
+                    if option_events_out is not None:
+                        option_events_out.append((option, tokens[index]))
+                elif option_events_out is not None:
+                    option_events_out.append((option, None))
                 break
             index += 1
             continue
@@ -807,11 +876,17 @@ def consume_wrapper_options(prefix: list[str], index: int, wrapper: str) -> int 
     while index < len(prefix):
         token = prefix[index]
         if token == "--":
-            return index + 1
+            index += 1
+            break
+        if wrapper == "env" and token == "-":
+            index += 1
+            continue
         if not token.startswith("-") or token == "-":
-            return index
+            break
         if token.startswith("--"):
             name, separator, _ = token[2:].partition("=")
+            if wrapper == "env":
+                name = resolved_git_long_option(token, ENV_LONG_OPTIONS) or name
             if not separator and name in WRAPPER_LONG_OPTIONS_WITH_ARGUMENT[wrapper]:
                 if index + 1 >= len(prefix):
                     return None
@@ -828,6 +903,12 @@ def consume_wrapper_options(prefix: list[str], index: int, wrapper: str) -> int 
                 index += 1
             break
         index += 1
+    if wrapper == "env":
+        while index < len(prefix):
+            name, separator, _ = prefix[index].partition("=")
+            if not separator or not name:
+                break
+            index += 1
     return index
 
 
@@ -891,9 +972,166 @@ def shell_command_prefix(tokens: list[str], command_index: int) -> list[str]:
     return tokens[start + 1 : command_index]
 
 
+def without_simple_shell_redirections(tokens: list[str]) -> list[str]:
+    """Remove only raw, unquoted bounded redirections from a command prefix."""
+    return [token for token in tokens if not isinstance(token, ShellRedirectionToken)]
+
+
+def resolved_git_long_option(argument: str, options: set[str]) -> str | None:
+    """Resolve one unambiguous Git long-option abbreviation."""
+    if not argument.startswith("--"):
+        return None
+    name = argument[2:].partition("=")[0]
+    matches = [option for option in options if option.startswith(name)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def git_config_key_is_valid(key: str) -> bool:
+    """Recognize Git's command-line config section and variable grammar."""
+    section, separator, _ = key.partition(".")
+    variable = key.rpartition(".")[2]
+    return bool(
+        separator
+        and re.fullmatch(r"[A-Za-z0-9-]+", section)
+        and re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", variable)
+    )
+
+
+def git_last_boolean_option(
+    arguments: list[str],
+    *,
+    short: str,
+    enabled: str,
+    disabled: str,
+    short_options_with_argument: set[str] | None = None,
+    long_options_with_argument: set[str] | None = None,
+    enabled_takes_value: bool = False,
+) -> bool:
+    """Return a Git boolean option's last-option-wins state."""
+    short_options_with_argument = short_options_with_argument or set()
+    long_options_with_argument = long_options_with_argument or set()
+    state = False
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            break
+        if argument.startswith("-") and not argument.startswith("--"):
+            cluster = argument[1:]
+            option_index = 0
+            while option_index < len(cluster):
+                option = cluster[option_index]
+                if option == short:
+                    state = True
+                if option in short_options_with_argument:
+                    if option_index + 1 == len(cluster):
+                        index += 1
+                    break
+                option_index += 1
+            index += 1
+            continue
+        value_option = resolved_git_long_option(argument, long_options_with_argument)
+        if value_option is not None:
+            if "=" not in argument:
+                index += 1
+            index += 1
+            continue
+        resolved = resolved_git_long_option(argument, {enabled, disabled})
+        if resolved == enabled:
+            state = True
+            if enabled_takes_value and "=" not in argument:
+                index += 1
+        elif resolved == disabled:
+            state = False
+        index += 1
+    return state
+
+
+def git_has_short_flag_before_terminator(arguments: list[str], flag: str) -> bool:
+    """Return whether a repeated short flag occurs before ``--``."""
+    for argument in arguments:
+        if argument == "--":
+            break
+        if (
+            argument.startswith("-")
+            and not argument.startswith("--")
+            and argument[1:]
+            and set(argument[1:]) == {flag}
+        ):
+            return True
+    return False
+
+
+def git_operands_may_use_transport(operands: list[tuple[str, int]]) -> bool:
+    """Return whether parsed Git operands select a network-bearing operation."""
+    if not operands:
+        return False
+    values = [operand for operand, _ in operands]
+    subcommand = values[0].rsplit("/", maxsplit=1)[-1]
+    arguments = values[1:]
+    if subcommand in GIT_REMOTE_SUBCOMMANDS - {"archive"}:
+        return True
+    if subcommand == "archive":
+        return git_last_boolean_option(
+            arguments,
+            short="",
+            enabled="remote",
+            disabled="no-remote",
+            long_options_with_argument={
+                "add-file",
+                "add-virtual-file",
+                "exec",
+                "format",
+                "mtime",
+                "output",
+                "prefix",
+            },
+            enabled_takes_value=True,
+        )
+    if subcommand == "remote":
+        while arguments and (
+            (
+                arguments[0].startswith("-")
+                and not arguments[0].startswith("--")
+                and set(arguments[0][1:]) == {"v"}
+            )
+            or resolved_git_long_option(arguments[0], {"verbose", "no-verbose"}) is not None
+        ):
+            arguments = arguments[1:]
+        if not arguments:
+            return False
+        operation, operation_arguments = arguments[0], arguments[1:]
+        if operation in {"prune", "update"}:
+            return True
+        if operation == "show":
+            return not git_has_short_flag_before_terminator(operation_arguments, "n")
+        if operation == "add":
+            return git_last_boolean_option(
+                operation_arguments,
+                short="f",
+                enabled="fetch",
+                disabled="no-fetch",
+                short_options_with_argument={"m", "t"},
+                long_options_with_argument={"master", "track"},
+            )
+        if operation == "set-head":
+            return git_last_boolean_option(
+                operation_arguments,
+                short="a",
+                enabled="auto",
+                disabled="no-auto",
+            )
+        return False
+    if subcommand == "submodule":
+        while arguments and arguments[0] in {"-q", "--quiet"}:
+            arguments = arguments[1:]
+        return bool(arguments and arguments[0] in {"add", "update"})
+    return False
+
+
 def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
     """Recognize shell prefixes without mistaking ordinary prose for a command."""
-    prefix = shell_command_prefix(tokens, command_index)
+    prefix = without_simple_shell_redirections(shell_command_prefix(tokens, command_index))
     if not prefix:
         return True
     index = 0
@@ -913,6 +1151,274 @@ def ssh_is_in_command_position(tokens: list[str], command_index: int) -> bool:
         while index < len(prefix) and SHELL_ASSIGNMENT.fullmatch(prefix[index]):
             index += 1
     return True
+
+
+def inline_environment_from_prefix(prefix_tokens: list[str]) -> dict[str, str]:
+    """Model bounded shell assignments and GNU env mutations before a command."""
+    inline_environment: dict[str, str] = {}
+    inside_env_prefix = False
+    env_options_enabled = False
+    prefix_index = 0
+    while prefix_index < len(prefix_tokens):
+        prefix_token = prefix_tokens[prefix_index]
+        if prefix_token in {";", "&&", "||", "|", "(", ")"}:
+            break
+        name, separator, value = prefix_token.partition("=")
+        if prefix_token.rsplit("/", maxsplit=1)[-1] == "env":
+            inside_env_prefix = True
+            env_options_enabled = True
+        elif inside_env_prefix:
+            resolved_env_option = (
+                resolved_git_long_option(prefix_token, ENV_LONG_OPTIONS)
+                if env_options_enabled
+                else None
+            )
+            if env_options_enabled and prefix_token == "--":
+                env_options_enabled = False
+            elif (
+                env_options_enabled and prefix_token == "-"
+            ) or resolved_env_option == "ignore-environment":
+                inline_environment.clear()
+            elif resolved_env_option == "unset":
+                environment_name = value if separator else ""
+                if not environment_name and prefix_index + 1 < len(prefix_tokens):
+                    prefix_index += 1
+                    environment_name = prefix_tokens[prefix_index]
+                inline_environment.pop(environment_name, None)
+            elif resolved_env_option in WRAPPER_LONG_OPTIONS_WITH_ARGUMENT["env"]:
+                if not separator and prefix_index + 1 < len(prefix_tokens):
+                    prefix_index += 1
+            elif (
+                env_options_enabled
+                and prefix_token.startswith("-")
+                and not prefix_token.startswith("--")
+            ):
+                cluster = prefix_token[1:]
+                cluster_index = 0
+                while cluster_index < len(cluster):
+                    option = cluster[cluster_index]
+                    if option == "i":
+                        inline_environment.clear()
+                    elif option == "u":
+                        environment_name = cluster[cluster_index + 1 :]
+                        if not environment_name and prefix_index + 1 < len(prefix_tokens):
+                            prefix_index += 1
+                            environment_name = prefix_tokens[prefix_index]
+                        inline_environment.pop(environment_name, None)
+                        break
+                    elif option in WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT["env"]:
+                        if cluster_index + 1 == len(cluster) and prefix_index + 1 < len(
+                            prefix_tokens
+                        ):
+                            prefix_index += 1
+                        break
+                    cluster_index += 1
+            elif separator and name:
+                inline_environment[name] = value
+        elif separator:
+            assignment_name = name.removesuffix("+")
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", assignment_name):
+                if name.endswith("+"):
+                    inline_environment[assignment_name] = (
+                        inline_environment.get(assignment_name, "") + value
+                    )
+                else:
+                    inline_environment[assignment_name] = value
+        prefix_index += 1
+    return inline_environment
+
+
+def command_with_inline_environment(command: str, environment: dict[str, str]) -> str:
+    """Prefix a nested command with a shell-safe representation of inline env."""
+    if not environment:
+        return command
+    assignments = " ".join(
+        nested_shell_quote(f"{name}={value}") for name, value in environment.items()
+    )
+    return f"env -- {assignments} {command}"
+
+
+def nested_shell_quote(value: str) -> str:
+    """Quote one synthetic token without embedding control-line boundaries."""
+    if any(character in value for character in "\n\r\t\v\f"):
+        escaped = value.encode("unicode_escape").decode("ascii").replace("'", r"\'")
+        return f"$'{escaped}'"
+    return shlex.quote(value)
+
+
+def nested_shell_join(arguments: list[str]) -> str:
+    """Join synthetic tokens while keeping control characters token-local."""
+    return " ".join(nested_shell_quote(argument) for argument in arguments)
+
+
+def env_split_with_inline_environment(command: str, environment: dict[str, str]) -> str:
+    """Re-enter env parsing after applying state established before ``-S``."""
+    if not environment:
+        return f"env {command}"
+    assignments = " ".join(
+        nested_shell_quote(f"{name}={value}") for name, value in environment.items()
+    )
+    return f"env -- {assignments} env {command}"
+
+
+def split_env_string(command: str, environment: dict[str, str]) -> list[str] | None:
+    """Parse GNU env ``-S`` quoting, escapes, and atomic variable expansion."""
+    arguments: list[str] = []
+    current: list[str] = []
+    index = 0
+    quote: str | None = None
+    argument_started = False
+    escapes = {
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "v": "\v",
+        "#": "#",
+        "$": "$",
+        '"': '"',
+        "'": "'",
+        "\\": "\\",
+    }
+
+    def finish_argument() -> None:
+        nonlocal argument_started
+        if argument_started:
+            arguments.append("".join(current))
+            current.clear()
+            argument_started = False
+
+    while index < len(command):
+        character = command[index]
+        if quote == "'":
+            if character == "'":
+                quote = None
+            elif character == "\\" and index + 1 < len(command):
+                escaped = command[index + 1]
+                if escaped not in {"'", "\\"}:
+                    current.append(character)
+                    index += 1
+                    continue
+                current.append(escaped)
+                index += 2
+                continue
+            else:
+                current.append(character)
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            if quote is None:
+                quote = character
+            elif character == quote:
+                quote = None
+            else:
+                current.append(character)
+            argument_started = True
+            index += 1
+            continue
+        if character == "\\":
+            if index + 1 >= len(command):
+                return None
+            escaped = command[index + 1]
+            if escaped == "c":
+                if quote == '"':
+                    return None
+                break
+            if escaped == "_":
+                if quote == '"':
+                    current.append(" ")
+                    argument_started = True
+                else:
+                    finish_argument()
+                index += 2
+                continue
+            if escaped not in escapes:
+                return None
+            current.append(escapes[escaped])
+            argument_started = True
+            index += 2
+            continue
+        if character == "$":
+            if not command.startswith("${", index):
+                return None
+            closing_brace = command.find("}", index + 2)
+            if closing_brace < 0:
+                return None
+            name = command[index + 2 : closing_brace]
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                return None
+            value = environment.get(name, "")
+            current.append(value)
+            argument_started = argument_started or name in environment
+            index = closing_brace + 1
+            continue
+        if quote is None and character in " \t\n\r\v\f":
+            finish_argument()
+            index += 1
+            continue
+        if quote is None and character == "#" and not argument_started:
+            break
+        current.append(character)
+        argument_started = True
+        index += 1
+    if quote is not None:
+        return None
+    finish_argument()
+    return arguments
+
+
+def env_split_string_commands(tokens: list[str], command_index: int) -> list[tuple[str, int]]:
+    """Return GNU env split strings and the token ending each option argument."""
+    commands: list[tuple[str, int]] = []
+    index = command_index + 1
+    options_enabled = True
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {";", "&&", "||", "|", "(", ")"}:
+            break
+        if options_enabled and token == "--":
+            options_enabled = False
+            index += 1
+            continue
+        if options_enabled and token == "-":
+            index += 1
+            continue
+        if options_enabled and token.startswith("--"):
+            option = resolved_git_long_option(token, ENV_LONG_OPTIONS)
+            _, separator, argument = token.partition("=")
+            if option in WRAPPER_LONG_OPTIONS_WITH_ARGUMENT["env"]:
+                if not separator:
+                    if index + 1 >= len(tokens):
+                        break
+                    index += 1
+                    argument = tokens[index]
+                if option == "split-string":
+                    commands.append((argument, index))
+                    break
+            index += 1
+            continue
+        if options_enabled and token.startswith("-"):
+            cluster = token[1:]
+            for option_index, option in enumerate(cluster):
+                if option not in WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT["env"]:
+                    continue
+                argument = cluster[option_index + 1 :]
+                if not argument:
+                    if index + 1 >= len(tokens):
+                        return commands
+                    index += 1
+                    argument = tokens[index]
+                if option == "S":
+                    commands.append((argument, index))
+                    return commands
+                break
+            index += 1
+            continue
+        name, separator, _ = token.partition("=")
+        if separator and name:
+            break
+        break
+    return commands
 
 
 def command_token_sequences(text: str):
@@ -941,21 +1447,115 @@ def command_token_sequences(text: str):
                         SHELL_OPTIONS_WITH_ARGUMENT,
                         SHELL_LONG_OPTIONS_WITH_ARGUMENT,
                     )
+                    inline_environment = inline_environment_from_prefix(
+                        without_simple_shell_redirections(shell_command_prefix(tokens, index))
+                    )
                     pending.extend(
-                        argument for option, argument in option_arguments if option == "c"
+                        command_with_inline_environment(argument, inline_environment)
+                        for option, argument in option_arguments
+                        if option == "c"
                     )
                 elif executable == "env":
-                    _, option_arguments = parse_openssh_arguments(
+                    for split_command, end_index in env_split_string_commands(tokens, index):
+                        inline_environment = inline_environment_from_prefix(
+                            without_simple_shell_redirections(
+                                shell_command_prefix(tokens, index) + tokens[index : end_index + 1]
+                            )
+                        )
+                        expansion_environment = inline_environment_from_prefix(
+                            without_simple_shell_redirections(shell_command_prefix(tokens, index))
+                        )
+                        split_arguments = split_env_string(split_command, expansion_environment)
+                        if split_arguments is None:
+                            continue
+                        trailing_arguments: list[str] = []
+                        for argument in tokens[end_index + 1 :]:
+                            if argument in {";", "&&", "||", "|", "(", ")"}:
+                                break
+                            trailing_arguments.append(argument)
+                        expanded_command = nested_shell_join(split_arguments + trailing_arguments)
+                        pending.append(
+                            env_split_with_inline_environment(expanded_command, inline_environment)
+                        )
+                elif executable == GIT_COMMAND:
+                    global_option_events: list[tuple[str, str | None]] = []
+                    operands, _ = parse_openssh_arguments(
                         tokens,
                         index,
-                        WRAPPER_SHORT_OPTIONS_WITH_ARGUMENT["env"],
-                        WRAPPER_LONG_OPTIONS_WITH_ARGUMENT["env"],
+                        GIT_GLOBAL_OPTIONS_WITH_ARGUMENT,
+                        GIT_GLOBAL_LONG_OPTIONS_WITH_ARGUMENT,
+                        long_flags=set(),
+                        option_events_out=global_option_events,
                     )
-                    pending.extend(
-                        argument
-                        for option, argument in option_arguments
-                        if option in {"S", "split-string"}
-                    )
+                    if git_operands_may_use_transport(operands):
+                        inline_environment = inline_environment_from_prefix(
+                            without_simple_shell_redirections(shell_command_prefix(tokens, index))
+                        )
+
+                        global_has_ssh_command = False
+                        global_ssh_command: str | None = None
+                        global_config_failed = False
+                        for option, argument in global_option_events:
+                            if option == "config-env" and argument is None:
+                                global_config_failed = True
+                                continue
+                            if argument is None:
+                                continue
+                            if option == "c":
+                                key, separator, value = argument.partition("=")
+                                if not git_config_key_is_valid(key):
+                                    global_config_failed = True
+                                    continue
+                                if key.lower() == "core.sshcommand":
+                                    global_has_ssh_command = True
+                                    global_ssh_command = value if separator else ""
+                            elif option == "config-env":
+                                key, separator, environment_name = argument.partition("=")
+                                if (
+                                    not separator
+                                    or not git_config_key_is_valid(key)
+                                    or not environment_name
+                                    or environment_name not in inline_environment
+                                ):
+                                    global_config_failed = True
+                                    continue
+                                if key.lower() == "core.sshcommand":
+                                    global_has_ssh_command = True
+                                    global_ssh_command = inline_environment[environment_name]
+
+                        clone_ssh_commands: list[str] = []
+                        clone_config_failed = False
+                        if operands and operands[0][0].rsplit("/", maxsplit=1)[-1] == "clone":
+                            clone_option_events: list[tuple[str, str | None]] = []
+                            parse_openssh_arguments(
+                                tokens,
+                                operands[0][1],
+                                GIT_REMOTE_OPTIONS_WITH_ARGUMENT["clone"],
+                                GIT_REMOTE_LONG_OPTIONS_WITH_ARGUMENT["clone"],
+                                options_after_operands=True,
+                                long_flags=GIT_REMOTE_LONG_FLAGS["clone"],
+                                option_events_out=clone_option_events,
+                            )
+                            for option, argument in clone_option_events:
+                                if option == "no-config":
+                                    clone_ssh_commands.clear()
+                                    clone_config_failed = False
+                                    continue
+                                if option not in {"c", "config"} or argument is None:
+                                    continue
+                                key, separator, value = argument.partition("=")
+                                if not git_config_key_is_valid(key):
+                                    clone_config_failed = True
+                                    continue
+                                if key.lower() == "core.sshcommand":
+                                    clone_ssh_commands.append(value if separator else "")
+                        if global_config_failed or clone_config_failed:
+                            continue
+                        if global_has_ssh_command:
+                            if global_ssh_command is not None:
+                                pending.append(global_ssh_command)
+                        else:
+                            pending.extend(clone_ssh_commands[-1:])
 
 
 def uri_host(destination: str, scheme: str) -> str | None:
@@ -1148,14 +1748,11 @@ def has_disallowed_openssh_config_endpoint(text: str) -> bool:
         "remoteforward": "R",
     }
     for line in text.splitlines():
-        tokens = config_tokens(line)
-        if not tokens:
+        parsed = config_key_values(line)
+        if parsed is None:
             continue
-        key, separator, attached_value = tokens[0].partition("=")
+        key, values = parsed
         normalized_key = key.lower()
-        values = ([attached_value] if separator else []) + tokens[1:]
-        if values[:1] == ["="]:
-            values = values[1:]
         if not values:
             continue
         if normalized_key == "proxycommand":
@@ -1273,15 +1870,12 @@ def has_disallowed_git_scp_url(text: str) -> bool:
                 raw_value = raw_value[1:]
             if git_value_is_windows_path(raw_value):
                 continue
-        tokens = config_tokens(line)
-        if not tokens:
+        parsed = config_key_values(line)
+        if parsed is None:
             continue
-        key, separator, attached_value = tokens[0].partition("=")
+        key, values = parsed
         if key.lower().rsplit(".", maxsplit=1)[-1] not in {"url", "pushurl"}:
             continue
-        values = ([attached_value] if separator else []) + tokens[1:]
-        if values[:1] == ["="]:
-            values = values[1:]
         if not values:
             continue
         remote = values[0]

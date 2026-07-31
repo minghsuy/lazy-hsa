@@ -205,6 +205,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
     git_pushurl_key = "push" + "url"
     git_command = "g" + "it"
     private_scp_remote = "private-host" + ":repo.git"
+    private_host = "private" + "-host"
     windows_repo = "C:" + "\\repos\\private.git"
     escaped_windows_repo = "C:" + "\\\\repos\\\\private.git"
     for text in (
@@ -218,6 +219,8 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         remote_command + " user" + "@my_private_host",
         "scp user" + "@[fd00::1]:/private/file .",
         f"{remote_command} private-host",
+        f"</dev/null {remote_command} {private_host}",
+        f"2>/dev/null {remote_command} {private_host}",
         f"{remote_command} 192.168.1.20",
         f"{remote_command} private-host # contact user@example.com",
         f"{remote_command} private-host echo user@example.com",
@@ -268,6 +271,7 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"exec {remote_command} prod",
         f"exec -a remote-session {remote_command} prod",
         f"VAR=x {remote_command} prod",
+        f"PATH+=:/opt/bin {remote_command} {private_host}",
         f"! {remote_command} prod",
         f"else {remote_command} prod",
         f"/usr/bin/{remote_command} prod",
@@ -347,6 +351,8 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"nohup {copy_command} ./local-file private-host:/private/file",
         f"env -S '{copy_command} private-host:/private/file .'",
         f"env --split-string='{copy_command} private-host:/private/file .'",
+        f"env -S '{remote_command}\\_{private_host}'",
+        f"env --split-string='{copy_command}\\_{private_host}:/x\\_.'",
         f"sudo {shell_command} -c '{copy_command} private-host:/private/file .'",
         f"{transfer_command} private-host",
         f"{transfer_command} private-host:/private/path",
@@ -401,9 +407,11 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"Standalone endpoint: {rsync_uri}private-host/private-module.",
         f"Standalone endpoint: {rsync_uri.upper()}192.168.1.20/private-module.",
         "HostName private-host",
+        f"HostName ={private_host}",
         "  HostName=192.168.1.20 # deployment endpoint",
         'HostName "[fd00::1]"',
         "ProxyJump private-jump",
+        f"ProxyJump ={private_host}",
         "  ProxyJump=example.com,private-jump",
         f"ProxyCommand {relay_command} private-host 22",
         f"ProxyCommand=timeout 5 {relay_command} private-host 22",
@@ -417,6 +425,8 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"entrypoint: {transfer_command} private-host:/private/path",
         f"script: {sync_command} private-host:/private/path ./destination",
         f"{git_url_key} = private-host:repo.git",
+        f"{git_url_key} ={private_scp_remote}",
+        f"{git_url_key}= {private_scp_remote}",
         f"{git_pushurl_key}=192.168.1.20:repo.git",
         f"remote.origin.{git_url_key} = [fd00::1]:repo.git",
         f"{git_url_key} = user" + "@private-host:repo.git",
@@ -477,6 +487,113 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{git_command} config set --value '.*' remote.origin.url private-host:repo.git",
         f"{git_command} config set --comment message remote.origin.url private-host:repo.git",
         f"{git_command} -c remote.origin.url={private_scp_remote} fetch origin",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "ls-remote example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "submodule update --init",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "submodule --quiet update --init",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "submodule -q update --init",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "submodule add example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' remote update",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' remote -v update",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' remote -vv update",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote --verbose update",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote --no-verbose update",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' remote --ver update",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' remote show -- -n",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote add -f public example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote add --fetch public example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote add --fet public example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote add -ft main public example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote set-head -a public",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote set-head --auto public",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote set-head --aut public",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "archive --remote=example.com:repo.git HEAD",
+        f"{git_command} clone -c core.sshCommand='{remote_command} -J private-jump' "
+        "example.com:repo.git",
+        f"{git_command} clone --config=core.sshCommand='{remote_command} -J private-jump' "
+        "example.com:repo.git",
+        f"{git_command} clone --conf=core.sshCommand='{remote_command} -J private-jump' "
+        "example.com:repo.git",
+        f"{git_command} clone -c core.sshCommand='{remote_command} -J example.com' "
+        f"-c core.sshCommand='{remote_command} -J private-jump' example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J example.com' "
+        f"-c core.sshCommand='{remote_command} -J private-jump' clone example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' clone "
+        f"-c core.sshCommand='{remote_command} -J example.com' example.com:repo.git",
+        f"{git_command} clone --no-config "
+        f"-c core.sshCommand='{remote_command} -J private-jump' example.com:repo.git",
+        f"{git_command} clone -c bad=value --no-config "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "example.com:repo.git",
+        f"PRIVATE_SSH_COMMAND='{remote_command} -J private-jump' {git_command} "
+        "--config-env=core.sshCommand=PRIVATE_SSH_COMMAND clone example.com:repo.git",
+        f"CFG={remote_command} CFG+=' {private_host}' {git_command} "
+        "--config-env=core.sshCommand=CFG ls-remote example.com:repo.git",
+        f"env 'CFG+={remote_command} {private_host}' {git_command} "
+        "--config-env=core.sshCommand=CFG+ ls-remote example.com:repo.git",
+        f"env 'SSH-CMD={remote_command} {private_host}' {git_command} "
+        "--config-env=core.sshCommand=SSH-CMD ls-remote example.com:repo.git",
+        f"env --un CFG {git_command} "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"env - {git_command} "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"CFG='{remote_command} {private_host}' env -C/bin {git_command} "
+        "--config-env=core.sshCommand=CFG ls-remote example.com:repo.git",
+        f"env --split='{git_command} "
+        f'-c core.sshCommand="{remote_command} -J {private_host}" '
+        "ls-remote example.com:repo.git'",
+        f"CFG='{remote_command} {private_host}' env -S "
+        f"'{git_command} --config-env=core.sshCommand=CFG "
+        "ls-remote example.com:repo.git'",
+        f"CFG='{remote_command} {private_host}' env -S "
+        f"'{git_command} --config-env=core.sshCommand=CFG "
+        "clone example.com:repo.git' "
+        f"CFG='{remote_command} -J example.com'",
+        f'env -S \'-i CFG="{remote_command} {private_host}" '
+        f"{git_command} --config-env=core.sshCommand=CFG "
+        "clone example.com:repo.git'",
+        f"CMD={git_command} CFG='{remote_command} {private_host}' "
+        "env -S '${CMD} --config-env=core.sshCommand=CFG "
+        "clone example.com:repo.git'",
+        f"env -S '-i CFG=\"{remote_command} {private_host}\"' "
+        f"{git_command} --config-env=core.sshCommand=CFG "
+        "clone example.com:repo.git",
+        "env -S '-i' "
+        f'-S \'CFG="{remote_command} {private_host}" {git_command} '
+        "--config-env=core.sshCommand=CFG clone example.com:repo.git'",
+        f"env -S '${{UNSET}} {git_command} "
+        f'-c core.sshCommand="{remote_command} {private_host}" '
+        "ls-remote example.com:repo.git'",
+        f'env -S \'CFG="{remote_command} {private_host}\\n:" '
+        f"{git_command} --config-env=core.sshCommand=CFG "
+        "ls-remote example.com:repo.git'",
+        f"CFG='{remote_command} {private_host}' {shell_command} -c "
+        f"'{git_command} --config-env=core.sshCommand=CFG "
+        "ls-remote example.com:repo.git'",
+        f"PRIVATE_SSH_COMMAND='{remote_command} -J private-jump' {git_command} "
+        "-c core.sshCommand='ssh -J example.com' "
+        "--config-env=core.sshCommand=PRIVATE_SSH_COMMAND clone example.com:repo.git",
+        f"PUBLIC_SSH_COMMAND='{remote_command} -J example.com' {git_command} "
+        "--config-e=core.sshCommand=PUBLIC_SSH_COMMAND "
+        f"-c core.sshCommand='{remote_command} -J private-jump' clone example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J private-jump' "
+        "remote add --mirror --fetch public example.com:repo.git",
         f"{git_command} -c url.private-host:repo.git.insteadOf=mirror clone mirror",
         f"{git_command} -c url.private-host:repo.git.pushInsteadOf=mirror push mirror main",
         f"{git_command} config url.private-host:repo.git.pushInsteadOf mirror",
@@ -629,6 +746,14 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         "Describe HostName private-host in prose.",
         "setting: ProxyJump private-jump",
         f"run: {remote_command} example.com",
+        f"</dev/null {remote_command} example.com",
+        f"2>/dev/null {remote_command} example.com",
+        f"PATH+=:/opt/bin {remote_command} example.com",
+        f"'</dev/null' {remote_command} {private_host}",
+        f"\\</dev/null {remote_command} {private_host}",
+        f"'2>/dev/null' {remote_command} {private_host}",
+        f"2\\>/dev/null {remote_command} {private_host}",
+        f"'>' /dev/null {remote_command} {private_host}",
         f"command: {copy_command} example.com:/private/file .",
         f"entrypoint: {transfer_command} example.com:/private/path",
         f"script: {sync_command} example.com:/path ./destination",
@@ -647,6 +772,10 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f'{git_url_key} = "{escaped_windows_repo}" # local checkout',
         f"{git_pushurl_key}={windows_repo} # local mirror",
         f"{git_url_key} = example.com:repo.git",
+        f"{git_url_key} =example.com:repo.git",
+        f"{git_url_key}= example.com:repo.git",
+        'HostName "=private-host"',
+        'ProxyJump "=private-host"',
         f"{git_url_key} = user@example.com:repo.git",
         f"{git_url_key} = " + public_clone_user + ":minghsuy/lazy-hsa.git",
         f"{git_url_key} = https://private-host/repo.git",
@@ -660,6 +789,112 @@ def test_public_metadata_guard_handles_ssh_options_and_contacts():
         f"{git_command} clone C:\\repos\\private.git",
         f"{git_command} clone 'C:\\repos\\private.git'",
         f"{git_command} clone --template private-host:repo.git example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J example.com' "
+        "ls-remote example.com:repo.git",
+        f"{git_command} -c core.editor='{remote_command} {private_host}' status",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' status",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        "remote add public example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' remote show -n public",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        "remote show -nn public",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        "remote add --fetch --no-fetch public example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        "remote add -- -f example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        "remote set-head -- -a main",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' submodule status",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' archive HEAD",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        "archive --remote=. --no-remote HEAD",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        "archive -- --remote=. HEAD",
+        f"{git_command} clone -c core.sshCommand='{remote_command} -J example.com' "
+        "example.com:repo.git",
+        f"{git_command} clone -c core.sshCommand='{remote_command} {private_host}' "
+        f"-c core.sshCommand='{remote_command} -J example.com' example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        f"-c core.sshCommand='{remote_command} -J example.com' clone example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} -J example.com' clone "
+        f"-c core.sshCommand='{remote_command} {private_host}' example.com:repo.git",
+        f"{git_command} clone -c core.sshCommand='{remote_command} {private_host}' "
+        "--no-config example.com:repo.git",
+        f"{git_command} clone -c core.sshCommand='{remote_command} {private_host}' "
+        "--no-conf example.com:repo.git",
+        f"PUBLIC_SSH_COMMAND='{remote_command} -J example.com' {git_command} "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "--config-env=core.sshCommand=PUBLIC_SSH_COMMAND clone example.com:repo.git",
+        f"PRIVATE_SSH_COMMAND='{remote_command} {private_host}' {git_command} "
+        "--config-env=core.sshCommand=PRIVATE_SSH_COMMAND "
+        f"-c core.sshCommand='{remote_command} -J example.com' clone example.com:repo.git",
+        f"{git_command} -c core.sshCommand='{remote_command} {private_host}' "
+        "--config-env=core.sshCommand=UNSET_SSH_COMMAND clone example.com:repo.git",
+        f"{git_command} --config-env=core.sshCommand=UNSET_SSH_COMMAND "
+        f"-c core.sshCommand='{remote_command} {private_host}' clone example.com:repo.git",
+        f"CFG='{remote_command} {private_host}' env -u CFG {git_command} "
+        "--config-env=core.sshCommand=CFG clone example.com:repo.git",
+        f"CFG='{remote_command} {private_host}' env --unset=CFG {git_command} "
+        "--config-env=core.sshCommand=CFG clone example.com:repo.git",
+        f"CFG='{remote_command} {private_host}' env -i {git_command} "
+        "--config-env=core.sshCommand=CFG ls-remote example.com:repo.git",
+        f"CFG='{remote_command} {private_host}' env --ignore-environment {git_command} "
+        "--config-env=core.sshCommand=CFG ls-remote example.com:repo.git",
+        f"CFG='{remote_command} {private_host}' env -iuCFG {git_command} "
+        "--config-env=core.sshCommand=CFG ls-remote example.com:repo.git",
+        f"CFG='{remote_command} example.com' env 'CFG+= {private_host}' {git_command} "
+        "--config-env=core.sshCommand=CFG ls-remote example.com:repo.git",
+        f"CMD={git_command} CFG='{remote_command} {private_host}' "
+        f"env -S '\\${{CMD}} --config-env=core.sshCommand=CFG "
+        "clone example.com:repo.git'",
+        f"CMD={git_command} CFG='{remote_command} {private_host}' "
+        f"""env -S "'${{CMD}}' --config-env=core.sshCommand=CFG """
+        'clone example.com:repo.git"',
+        f"CMD='{git_command} --config-env=core.sshCommand=CFG "
+        f"clone example.com:repo.git' CFG='{remote_command} {private_host}' "
+        "env -S '${CMD}'",
+        f'env -S \'"${{UNSET}}" {git_command} '
+        f'-c core.sshCommand="{remote_command} {private_host}" '
+        "ls-remote example.com:repo.git'",
+        f"A= env -S '${{A}} {git_command} "
+        f'-c core.sshCommand="{remote_command} {private_host}" '
+        "ls-remote example.com:repo.git'",
+        f"env FOO=x -S '{git_command} "
+        f'-c core.sshCommand="{remote_command} {private_host}" '
+        "ls-remote example.com:repo.git'",
+        f"{git_command} --config-env=user.name=UNSET_NAME "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"{git_command} --config-env=malformed "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"CFG=public {git_command} --config-env=bad=CFG "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"CFG=public {git_command} --config-env=.bad=CFG "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"CFG=public {git_command} --config-env=bad.=CFG "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"{git_command} -c bad=value "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"{git_command} clone -c bad=value "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "example.com:repo.git",
+        f"{git_command} --config-env -c "
+        f"core.sshCommand='{remote_command} {private_host}' "
+        "ls-remote example.com:repo.git",
+        f"{git_command} -c core.sshCommand clone "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "example.com:repo.git",
+        f"{git_command} clone "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "-c core.sshCommand example.com:repo.git",
+        f"{git_command} clone "
+        f"-c core.sshCommand='{remote_command} {private_host}' "
+        "--config=core.sshCommand example.com:repo.git",
         f"{git_command} clone -u private-host:helper example.com:repo.git",
         f"{git_command} clone --server-option private-host:repo.git example.com:repo.git",
         f"{git_command} ls-remote --upload-pack private-host:repo.git example.com:repo.git",
