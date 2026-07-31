@@ -59,22 +59,22 @@ google_sheets:
 email:
   primary:
     gmail:
-      address: "your-email@gmail.com"
+      address: "your-email@example.com"
       # Uses OAuth, no password needed
     icloud:
-      address: "your-email@icloud.com"
+      address: "your-email@example.com"
       app_password: "xxxx-xxxx-xxxx-xxxx"  # Generate at appleid.apple.com
       imap_server: "imap.mail.me.com"
   # Add more accounts as needed:
   # spouse:
   #   gmail:
-  #     address: "spouse@gmail.com"
+  #     address: "spouse@example.com"
 
 # =============================================================================
 # Scanner Email Inbox (Optional - for receiving scanned receipts)
 # =============================================================================
 scanner:
-  monitor_email: "your-receipts@gmail.com"
+  monitor_email: "your-receipts@example.com"
   gmail_label: "Scanner"
 
 # =============================================================================
@@ -171,4 +171,4 @@ backup:
   enabled: false
   # local_path: "/path/to/backup"
   # Or use rsync to NAS
-  # rsync_target: "user@nas:/backup/hsa-receipts"
+  # rsync_target: "user@example.com:/backup/hsa-receipts"

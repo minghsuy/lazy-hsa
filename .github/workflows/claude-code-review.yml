@@ -15,7 +15,7 @@ name: Claude Code Review
 # `BRIDGE_PAT` (fine-grained PAT, scope: Pull requests Read+Write).
 #
 # When upstream anthropics/claude-code-action#1266 is fixed, this workflow
-# can revert to a direct `claude-code-action@v1` invocation; the PAT becomes
+# can revert to a direct `anthropics/claude-code-action@v1` invocation; the PAT becomes
 # dead weight and can be removed.
 #
 # Setup (one-time, per repo with this workflow):
