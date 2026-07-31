@@ -187,6 +187,7 @@ def test_public_metadata_guard_has_bounded_context_free_rules():
 
     for home in (
         "/" + "home/private-user/config",
+        "/" + "home/שלום/config",
         "/" + "Users/private-user/config",
         "C:" + "\\Users\\private-user\\config",
         "/" + "root/.ssh/config",
