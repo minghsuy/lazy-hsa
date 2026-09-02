@@ -85,9 +85,25 @@ select = [
     "UP",     # pyupgrade
     "SIM",    # flake8-simplify
 ]
+extend-select = ["C901", "PLR0912", "PLR0913", "PLR0915"]
 ignore = [
     "E501",   # line too long (handled by formatter)
 ]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-args = 10
+max-branches = 15
+max-statements = 75
+
+# Existing complexity debt measured 2026-09-02. Reduce or remove each waiver
+# when touching the named code.
+[tool.ruff.lint.per-file-ignores]
+"src/pipeline.py" = ["C901", "PLR0912", "PLR0915"]
+"src/processors/llm_extractor.py" = ["C901", "PLR0912", "PLR0915"]
+"src/storage/sheet_client.py" = ["C901", "PLR0912", "PLR0915"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
