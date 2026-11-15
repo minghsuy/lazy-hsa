@@ -1,0 +1,1767 @@
+#!/usr/bin/env python3
+"""
+HSA Receipt Processing Pipeline
+Main orchestration for the receipt organization system
+
+Uses vision-enabled LLM (Mistral Small 3) for direct image-to-JSON extraction.
+"""
+
+import logging
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from processors.llm_extractor import (
+    ExtractedClaim,
+    ExtractedReceipt,
+    detect_provider_skill,
+    get_extractor,
+)
+from storage.gdrive_client import GDriveClient
+from storage.sheet_client import (
+    PATIENT_GUESS_TAG,
+    REVIEW_CONFIRMED,
+    REVIEW_PENDING,
+    REVIEW_STATUS,
+    GSheetsClient,
+    ReceiptRecord,
+    _safe_float,
+    _suspect_pre_hsa_reason,
+    create_record_from_extraction,
+    visit_amount,
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+def _int_id(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class HSAReceiptPipeline:
+    """
+    Main pipeline for processing HSA receipts.
+
+    Flow:
+    1. Get receipt file (from inbox, email, or scanner)
+    2. Use vision LLM to extract structured data directly from image/PDF
+    3. Validate HSA eligibility and apply business rules
+    4. Upload to Google Drive with proper naming
+    5. Add record to tracking spreadsheet
+    """
+
+    def __init__(self, config_path: str = "config/config.yaml"):
+        """Initialize pipeline from config."""
+        self.config = self._load_config(config_path)
+        self.hsa_start_date = datetime.strptime(
+            self.config.get("hsa", {}).get("start_date", "2026-01-01"),
+            "%Y-%m-%d",
+        )
+
+        # Processing thresholds
+        processing = self.config.get("processing", {})
+        self.auto_threshold = processing.get("auto_process_threshold", 0.85)
+        self.review_threshold = processing.get("review_threshold", 0.70)
+
+        # Family member names (for folder mapping)
+        family = self.config.get("family", [])
+        self.family_names = (
+            [m.get("name", "Unknown") for m in family] if family else ["Alice", "Bob", "Charlie"]
+        )
+        # Alias -> canonical name (lowercase keys). Lets receipts/filenames
+        # use nicknames or alternate spellings (e.g. "Tori" -> "Victoria").
+        # Warn on collisions across family members so duplicate aliases in
+        # config don't silently resolve to whichever member happened to be
+        # processed last.
+        self.family_aliases: dict[str, str] = {}
+        for member in family:
+            name = member.get("name")
+            if not name:
+                continue
+            for alias in member.get("aliases", []) or []:
+                key = alias.lower()
+                if key in self.family_aliases and self.family_aliases[key] != name:
+                    logger.warning(
+                        "Duplicate alias '%s' for both '%s' and '%s' — using '%s'",
+                        alias,
+                        self.family_aliases[key],
+                        name,
+                        name,
+                    )
+                self.family_aliases[key] = name
+
+        # Initialize components (lazy)
+        self._llm = None
+        self._gdrive = None
+        self._sheets = None
+
+    def preflight_check(self):
+        """Validate all API tokens before processing.
+
+        Forces initialization of Drive and Sheets clients, triggering
+        OAuth re-auth if tokens are expired. Call this before expensive
+        LLM extraction to fail fast on auth issues.
+        """
+        logger.info("Running pre-flight checks...")
+
+        # Force Drive client initialization
+        try:
+            self.gdrive._get_service()
+            logger.info("  Google Drive: OK")
+        except Exception as e:
+            raise RuntimeError(f"Google Drive authentication failed: {e}") from e
+
+        # Force Sheets client initialization
+        try:
+            self.sheets._get_client()
+            logger.info("  Google Sheets: OK")
+        except Exception as e:
+            raise RuntimeError(f"Google Sheets authentication failed: {e}") from e
+
+        logger.info("Pre-flight checks passed")
+
+    def _normalize_patient_name(self, extracted_name: str) -> str:
+        """Validate extracted name is a known family member.
+
+        The LLM prompt constrains patient_name to be one of the family members,
+        but this is a safety net in case it returns something else.
+
+        Resolution order is intentionally stricter than
+        ``VisionExtractor._map_patient_name``: this path checks alias *exact*
+        match before falling into substring matching. The extractor's path is
+        looser because EOB patient strings often include extra context (role
+        markers, full names) that need substring tolerance. Keep both paths in
+        sync if you change one.
+        """
+        if not extracted_name:
+            return self.family_names[0]
+
+        # Check for exact match (LLM should return exact name)
+        if extracted_name in self.family_names:
+            return extracted_name
+
+        extracted_lower = extracted_name.lower()
+
+        # Alias match (e.g. "Tori" -> "Victoria")
+        if extracted_lower in self.family_aliases:
+            return self.family_aliases[extracted_lower]
+
+        # Substring match against canonical names (e.g. "Alice Smith" -> "Alice")
+        for family_name in self.family_names:
+            if family_name.lower() in extracted_lower:
+                return family_name
+
+        # Substring match against aliases (e.g. "Tori Smith" -> "Victoria")
+        for alias_lower, canonical in self.family_aliases.items():
+            if alias_lower in extracted_lower:
+                return canonical
+
+        # Default to primary holder
+        return self.family_names[0]
+
+    def _get_pdf_content_hints(self, file_path: Path) -> list[str]:
+        """Extract text hints from PDF first page to detect provider.
+
+        Uses pdfplumber to get text from the first page for provider detection.
+        This allows detecting Aetna EOBs even if filename doesn't contain 'aetna'.
+        """
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(file_path) as pdf:
+                if pdf.pages:
+                    text = pdf.pages[0].extract_text() or ""
+                    # Return first 500 chars as hints (enough for header detection)
+                    return [text[:500]] if text else []
+        except Exception as e:
+            logger.debug(f"Could not extract PDF hints: {e}")
+        return []
+
+    def filter_claims_by_hsa_date(
+        self, claims: list[ExtractedClaim]
+    ) -> tuple[list[ExtractedClaim], list[ExtractedClaim]]:
+        """Filter claims: only include service_date >= HSA start date.
+
+        Args:
+            claims: List of extracted claims from EOB
+
+        Returns:
+            Tuple of (eligible_claims, skipped_claims)
+        """
+        eligible = []
+        skipped = []
+        hsa_start = self.hsa_start_date.strftime("%Y-%m-%d")
+
+        for claim in claims:
+            if not claim.service_date:
+                # If no date, include but log warning
+                logger.warning(f"Claim has no service_date: {claim.original_provider}")
+                eligible.append(claim)
+            elif claim.service_date >= hsa_start:
+                eligible.append(claim)
+            else:
+                skipped.append(claim)
+                logger.info(
+                    f"Skipping pre-HSA claim: {claim.patient_name} "
+                    f"{claim.service_date} ({claim.original_provider})"
+                )
+
+        return eligible, skipped
+
+    def process_eob_file(
+        self,
+        file_path: str,
+        patient_hint: str | None = None,
+        dry_run: bool = False,
+        provider_hint: str | None = None,
+        source_note: str | None = None,
+    ) -> dict | None:
+        """Process a multi-claim document (EOB, statement, or claims summary).
+
+        Documents with multiple claims/service lines are processed here:
+        - Aetna EOBs: multiple claims for different patients/dates
+        - Sutter statements: multiple service lines for one patient
+        - Express Scripts claims summaries: multiple prescriptions for family
+
+        This method:
+        1. Extracts all claims from the document
+        2. Filters out pre-HSA claims (service_date < HSA start)
+        3. Uploads the file ONCE to EOBs/{category}/ folder
+        4. Creates a sheet entry for EACH eligible claim
+        5. Links claims to existing records if found
+
+        Args:
+            file_path: Path to the document
+            patient_hint: Optional patient name hint from filename
+            dry_run: If True, preview without uploading or recording
+            provider_hint: Optional provider skill key (e.g., "aetna") for extraction routing
+            source_note: Appended to every claim record's notes in the same write
+
+        Returns:
+            Dict with processing results
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            logger.error(f"File not found: {file_path}")
+            return None
+
+        logger.info(f"Processing multi-claim document: {file_path.name}")
+
+        # Step 1: Extract with multi-claim support
+        try:
+            extraction = self.llm.extract_eob(file_path, provider_hint=provider_hint)
+            doc_type = extraction.document_type or "eob"
+            logger.info(
+                f"Extracted {len(extraction.claims)} claims from {extraction.payer_name} {doc_type}"
+            )
+        except Exception as e:
+            logger.error(f"Multi-claim extraction failed: {e}")
+            return None
+
+        # Step 2: Filter by HSA date
+        eligible, skipped = self.filter_claims_by_hsa_date(extraction.claims)
+        logger.info(f"Claims: {len(eligible)} eligible, {len(skipped)} skipped (pre-HSA)")
+
+        # Apply patient_hint override: if LLM defaulted all claims to
+        # the primary family member, use the hint from the filename instead
+        if patient_hint and patient_hint in self.family_names:
+            for claim in eligible + skipped:
+                normalized = self._normalize_patient_name(claim.patient_name)
+                unknown = claim.patient_name in ("", "Unknown")
+                if normalized == self.family_names[0] and (
+                    patient_hint != self.family_names[0] or unknown
+                ):
+                    claim.patient_name = patient_hint
+
+        if dry_run:
+            return {
+                "file": str(file_path),
+                "document_type": doc_type,
+                "payer_name": extraction.payer_name,
+                "category": extraction.category,
+                "confidence_score": extraction.confidence_score,
+                "eligible_claims": [c.to_dict() for c in eligible],
+                "skipped_claims": [c.to_dict() for c in skipped],
+                "would_upload_to": f"EOBs/{extraction.category.title()}/",
+            }
+
+        if not eligible:
+            logger.warning("No eligible claims to process")
+            return {
+                "file": str(file_path),
+                "eligible_claims": [],
+                "skipped_claims": [c.to_dict() for c in skipped],
+                "message": "All claims are pre-HSA, nothing to process",
+            }
+
+        if not self._index_accepts_review_status():
+            return None
+
+        # Step 3: Upload file ONCE to EOBs/{category}/
+        # Use statement date for filename (unique per EOB); fall back to earliest service date
+        if extraction.statement_date:
+            date_for_filename = extraction.statement_date
+        else:
+            date_for_filename = min(
+                (c.service_date for c in eligible if c.service_date),
+                default=datetime.now().strftime("%Y-%m-%d"),
+            )
+        year = int(date_for_filename[:4])
+        file_extension = file_path.suffix.lstrip(".")
+        doc_label = doc_type.upper()
+        new_filename = f"{date_for_filename}_{extraction.payer_name}_{doc_label}.{file_extension}"
+
+        try:
+            folder_id = self.gdrive.get_folder_id_for_eob(
+                category=extraction.category,
+                year=year,
+            )
+            drive_file = self.gdrive.upload_file(
+                local_path=file_path,
+                folder_id=folder_id,
+                new_name=new_filename,
+            )
+            logger.info(f"Uploaded {doc_type} to Drive: {drive_file.web_link}")
+        except Exception as e:
+            logger.error(f"Upload failed: {e}")
+            return None
+
+        # Step 4: Create sheet entry for EACH eligible claim
+        results = []
+        for claim in eligible:
+            # Normalize patient name (hint override already applied above)
+            patient = self._normalize_patient_name(claim.patient_name)
+            # The document did not show this claim's patient: it is filed under the default
+            # member and tagged. A guessed patient must not decide what the record links
+            # to or duplicates, so it stands alone until a person confirms it.
+            guessed = claim.patient_name in ("", "Unknown")
+
+            # Check for duplicate claims already in the spreadsheet
+            same_claim = self.sheets.find_duplicates(
+                provider=extraction.payer_name,
+                service_date=claim.service_date,
+                amount=claim.patient_responsibility,
+            )
+            # Filter to same patient. A guessed patient proves nothing, so such a claim is
+            # never made supplementary; a look-alike is only named in its notes (below),
+            # which also marks a second ingest of the same file.
+            duplicates = [] if guessed else [d for d in same_claim if d.get("Patient") == patient]
+
+            if duplicates:
+                existing_id = duplicates[0].get("ID")
+                is_authoritative = False
+                linked_to = existing_id
+                notes = f"[Supplementary evidence - see #{existing_id}] {extraction.notes or ''}".strip()
+                logger.info(
+                    f"Duplicate claim found (#{existing_id}), linking as supplementary evidence"
+                )
+            else:
+                # Find matching records (statements for EOBs, EOBs for statements)
+                matches = (
+                    []
+                    if guessed
+                    else self.sheets.find_matching_statements(
+                        service_date=claim.service_date,
+                        patient=patient,
+                        provider_pattern=claim.original_provider,
+                    )
+                )
+                linked_to = matches[0].get("ID") if matches else None
+                is_authoritative = doc_type == "eob"
+                notes = extraction.notes or ""
+                # A match on a duplicated ID would be written and then refused by
+                # link_records, leaving a half-linked row reported as failed.
+                rows = self.sheets.duplicate_ids().get(_int_id(linked_to)) if matches else None
+                if rows:
+                    notes = (
+                        f"[Not linked to #{linked_to}: that ID is on {rows} rows; renumber "
+                        f"it in the sheet, then link by hand] {notes}"
+                    ).strip()
+                    logger.warning(f"Match #{linked_to} is on {rows} rows; adding unlinked")
+                    linked_to = None
+            # Only this code may write the tag: defuse one the model put in its own notes.
+            notes = notes.replace(PATIENT_GUESS_TAG, "[patient")
+            if guessed:
+                if same_claim:
+                    notes = (
+                        f"[Possible duplicate of #{same_claim[0].get('ID')}: same payer, date "
+                        f"and amount] {notes}"
+                    ).strip()
+                notes = f"{PATIENT_GUESS_TAG}: filed under {patient}] {notes}".strip()
+            if source_note:
+                notes = f"{notes} {source_note}".strip()
+
+            # Build file path
+            eob_folder_path = self.gdrive.get_eob_folder_path(extraction.category, year)
+            file_path_str = f"{eob_folder_path}/{new_filename}"
+
+            # Create record
+            record = ReceiptRecord(
+                id=0,
+                date_added=datetime.now().strftime("%Y-%m-%d"),
+                service_date=claim.service_date,
+                provider=extraction.payer_name,
+                service_type=claim.service_type,
+                patient=patient,
+                category=extraction.category,
+                billed_amount=claim.billed_amount,
+                insurance_paid=claim.insurance_paid,
+                patient_responsibility=claim.patient_responsibility,
+                hsa_eligible=True,
+                document_type=doc_type,
+                file_path=file_path_str,
+                file_link=drive_file.web_link,
+                reimbursed=False,
+                reimbursement_date="",
+                reimbursement_amount=0,
+                confidence=extraction.confidence_score,
+                notes=notes,
+                original_provider=claim.original_provider,
+                linked_record_id=str(linked_to) if linked_to is not None else None,
+                is_authoritative=is_authoritative,
+                review_status=REVIEW_PENDING,
+            )
+
+            try:
+                record_id = self.sheets.add_record(record)
+
+                # Link to existing record if found (cross-type: EOB<->statement)
+                if linked_to is not None and not duplicates:
+                    self.sheets.link_records(record_id, linked_to)
+                    logger.info(f"Linked {doc_type} #{record_id} to record #{linked_to}")
+
+                results.append(
+                    {
+                        "claim": claim.to_dict(),
+                        "record_id": record_id,
+                        "linked_to": linked_to,
+                        "patient": patient,
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to add record for claim: {e}")
+                results.append(
+                    {
+                        "claim": claim.to_dict(),
+                        "error": str(e),
+                    }
+                )
+
+        return {
+            "file": str(file_path),
+            "document_type": doc_type,
+            "payer_name": extraction.payer_name,
+            "drive_file": {
+                "id": drive_file.id,
+                "name": drive_file.name,
+                "link": drive_file.web_link,
+            },
+            "claims_processed": results,
+            "claims_skipped": [c.to_dict() for c in skipped],
+        }
+
+    def _load_config(self, config_path: str) -> dict:
+        """Load configuration from YAML."""
+        config_path = Path(config_path)
+        if not config_path.exists():
+            logger.warning(f"Config not found: {config_path}, using defaults")
+            return {}
+
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
+
+    @property
+    def llm(self):
+        """Lazy-load vision LLM extractor."""
+        if self._llm is None:
+            llm_config = self.config.get("llm", {})
+            use_mock = llm_config.get("use_mock", False)
+
+            # Build API base URL
+            provider = llm_config.get("provider", "ollama")
+            if provider == "ollama":
+                default_base = "http://localhost:11434/v1"
+            else:  # vllm
+                default_base = "http://localhost:8000/v1"
+
+            self._llm = get_extractor(
+                use_mock=use_mock,
+                api_base=llm_config.get("api_base", default_base),
+                model=llm_config.get("model", "mistral-small3"),
+                vision_model=llm_config.get("vision_model"),
+                eob_model=llm_config.get("eob_model"),
+                max_tokens=llm_config.get("max_tokens", 2048),
+                temperature=llm_config.get("temperature", 0.1),
+                family_members=self.family_names,
+                family_aliases=self.family_aliases,
+            )
+        return self._llm
+
+    @property
+    def gdrive(self):
+        """Lazy-load Google Drive client."""
+        if self._gdrive is None:
+            gdrive_config = self.config.get("google_drive", {})
+            self._gdrive = GDriveClient(
+                credentials_file=gdrive_config.get(
+                    "credentials_file", "config/credentials/gdrive_credentials.json"
+                ),
+                token_file=gdrive_config.get("token_file", "config/credentials/gdrive_token.json"),
+                root_folder_name=gdrive_config.get("root_folder", "HSA_Receipts"),
+            )
+        return self._gdrive
+
+    @property
+    def sheets(self):
+        """Lazy-load Google Sheets client."""
+        if self._sheets is None:
+            sheets_config = self.config.get("google_sheets", {})
+            self._sheets = GSheetsClient(
+                credentials_file=self.config.get("google_drive", {}).get(
+                    "credentials_file", "config/credentials/gdrive_credentials.json"
+                ),
+                spreadsheet_name=sheets_config.get("spreadsheet_name", "HSA_Master_Index"),
+                worksheet_name=sheets_config.get("worksheet_name", "Receipts"),
+            )
+        return self._sheets
+
+    def _index_accepts_review_status(self) -> bool:
+        """Checked before the Drive upload: once the file is uploaded, a refused
+        sheet write would leave it in Drive with no record, reported as success.
+        Any failure here (API errors included) skips this file the way a failed
+        upload does, rather than aborting a whole --dir or email-scan batch."""
+        try:
+            self.sheets.check_review_status_column()
+        except Exception as e:
+            logger.error(
+                f"Not processing - the index cannot store Review Status: {type(e).__name__}: {e}"
+            )
+            return False
+        return True
+
+    def _classify_confidence(self, score: float) -> str:
+        """Classify extraction confidence level."""
+        if score >= self.auto_threshold:
+            return "high"
+        if score >= self.review_threshold:
+            return "medium"
+        return "low"
+
+    def process_file(
+        self,
+        file_path: str,
+        patient_hint: str | None = None,
+        dry_run: bool = False,
+        source_note: str | None = None,
+    ) -> dict | None:
+        """
+        Process a single receipt file.
+
+        Args:
+            file_path: Path to receipt file (PDF or image)
+            patient_hint: Optional hint for patient name
+            dry_run: If True, don't upload or record, just return results
+            source_note: Appended to the record's notes in the same write (multi-claim
+                documents: to every claim record)
+
+        Returns:
+            Dict with processing results, or None if failed
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            logger.error(f"File not found: {file_path}")
+            return None
+
+        logger.info(f"Processing: {file_path.name}")
+
+        # Check if this is a multi-claim EOB (e.g., Aetna)
+        # First check filename, then check PDF content if it's a PDF
+        provider_skill = detect_provider_skill(file_path.name)
+        if not provider_skill and file_path.suffix.lower() == ".pdf":
+            # Extract text preview to detect provider from content
+            content_hints = self._get_pdf_content_hints(file_path)
+            if content_hints:
+                provider_skill = detect_provider_skill(file_path.name, content_hints)
+                if provider_skill:
+                    logger.info(f"Detected provider from PDF content: {provider_skill}")
+
+        # xlsx files always use multi-claim extraction (structured spreadsheet data)
+        # Also route specific providers to multi-claim extraction
+        multi_claim_providers = {"aetna", "express_scripts", "sutter"}
+        if file_path.suffix.lower() == ".xlsx" or provider_skill in multi_claim_providers:
+            logger.info(f"Detected {provider_skill} - using multi-claim extraction")
+            return self.process_eob_file(
+                str(file_path),
+                patient_hint=patient_hint,
+                dry_run=dry_run,
+                provider_hint=provider_skill,
+                source_note=source_note,
+            )
+
+        # Step 1: Vision LLM extraction (direct from image/PDF)
+        try:
+            extraction = self.llm.extract(file_path, provider_hint=provider_skill)
+            confidence_level = self._classify_confidence(extraction.confidence_score)
+            logger.info(
+                f"Extraction [{confidence_level}]: {extraction.provider_name} - "
+                f"{extraction.service_type} - ${extraction.patient_responsibility:.2f}"
+            )
+        except Exception as e:
+            logger.error(f"Vision extraction failed: {e}")
+            return None
+
+        # Apply patient hint if provided (always override), otherwise normalize extracted name
+        folder_patient = patient_hint or self._normalize_patient_name(extraction.patient_name)
+        # The extractor answers "Unknown" when the document does not show the patient. The
+        # record still needs a folder, so it goes under the default member - tagged, so the
+        # guess is listed for review instead of looking like a reading.
+        guessed = not patient_hint and extraction.patient_name in ("", "Unknown")
+        notes = extraction.notes.replace(PATIENT_GUESS_TAG, "[patient")
+        if guessed:
+            notes = f"{PATIENT_GUESS_TAG}: filed under {folder_patient}] {notes}".strip()
+
+        # Update extraction with normalized patient name for folder/filename
+        if folder_patient != extraction.patient_name or notes != extraction.notes:
+            extraction = ExtractedReceipt(
+                **{**extraction.to_dict(), "patient_name": folder_patient, "notes": notes}
+            )
+
+        # Step 2: Validate HSA eligibility date
+        if extraction.service_date:
+            try:
+                service_date = datetime.strptime(extraction.service_date, "%Y-%m-%d")
+                if service_date < self.hsa_start_date:
+                    logger.warning(
+                        f"Service date {extraction.service_date} is before HSA start date"
+                    )
+                    notes = extraction.notes
+                    notes += f" [Pre-HSA: before {self.hsa_start_date.strftime('%Y-%m-%d')}]"
+                    extraction = ExtractedReceipt(
+                        **{**extraction.to_dict(), "hsa_eligible": False, "notes": notes}
+                    )
+            except ValueError:
+                pass
+
+        # Step 3: Generate filename
+        file_extension = file_path.suffix.lstrip(".")
+        new_filename = extraction.generate_filename(extension=file_extension)
+        logger.info(f"Generated filename: {new_filename}")
+
+        # Determine confidence-based action
+        confidence_level = self._classify_confidence(extraction.confidence_score)
+        needs_review = confidence_level != "high"
+
+        if dry_run:
+            return {
+                "file": str(file_path),
+                "extraction": extraction.to_dict(),
+                "new_filename": new_filename,
+                "confidence_level": confidence_level,
+                "needs_review": needs_review,
+                "would_upload_to": f"{extraction.category}/{extraction.patient_name}",
+            }
+
+        if not self._index_accepts_review_status():
+            return None
+
+        # Step 4: Upload to Google Drive
+        try:
+            folder_id = self.gdrive.get_folder_id_for_receipt(
+                category=extraction.category,
+                patient=extraction.patient_name,
+            )
+
+            drive_file = self.gdrive.upload_file(
+                local_path=file_path,
+                folder_id=folder_id,
+                new_name=new_filename,
+            )
+            logger.info(f"Uploaded to Drive: {drive_file.web_link}")
+        except Exception as e:
+            logger.error(f"Drive upload failed: {e}")
+            return None
+
+        # Step 5: Check for duplicates and add to tracking spreadsheet
+        record_id = None
+        duplicate_of = None
+        try:
+            # Check for potential duplicates (same provider, date, amount)
+            if extraction.service_date:
+                duplicates = self.sheets.find_duplicates(
+                    provider=extraction.provider_name,
+                    service_date=extraction.service_date,
+                    amount=extraction.patient_responsibility,
+                )
+                if duplicates:
+                    duplicate_of = duplicates[0].get("ID")
+                    logger.warning(
+                        f"Potential duplicate of ID {duplicate_of}: "
+                        f"{duplicates[0].get('Provider')} on {duplicates[0].get('Service Date')}"
+                    )
+
+            file_path_str = (
+                self.gdrive.get_folder_path(extraction.category, extraction.patient_name)
+                + "/"
+                + new_filename
+            )
+
+            record = create_record_from_extraction(
+                extraction=extraction,
+                file_path=file_path_str,
+                file_link=drive_file.web_link,
+            )
+
+            # Add duplicate reference to notes if found
+            if duplicate_of:
+                existing_notes = record.notes or ""
+                record = ReceiptRecord(
+                    **{
+                        **record.__dict__,
+                        "notes": f"[Duplicate of ID {duplicate_of}] {existing_notes}".strip(),
+                    }
+                )
+            if source_note:
+                record.notes = f"{record.notes or ''} {source_note}".strip()
+
+            record_id = self.sheets.add_record(record)
+            logger.info(f"Added to spreadsheet: ID {record_id}")
+        except Exception as e:
+            logger.error(f"Spreadsheet update failed: {e}")
+            # Don't fail - file is uploaded
+
+        return {
+            "file": str(file_path),
+            "extraction": extraction.to_dict(),
+            "confidence_level": confidence_level,
+            "needs_review": needs_review,
+            "duplicate_of": duplicate_of,
+            "drive_file": {
+                "id": drive_file.id,
+                "name": drive_file.name,
+                "link": drive_file.web_link,
+            },
+            "record_id": record_id,
+        }
+
+    def process_directory(
+        self,
+        directory: str,
+        patient_hint: str | None = None,
+        dry_run: bool = False,
+    ) -> list[dict]:
+        """
+        Process all receipt files in a directory.
+
+        Args:
+            directory: Path to directory
+            patient_hint: Optional hint for patient name
+            dry_run: If True, don't upload or record
+
+        Returns:
+            List of processing results
+        """
+        directory = Path(directory)
+        results = []
+
+        # Supported file types
+        extensions = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".gif", ".xlsx"}
+
+        for file_path in sorted(directory.iterdir()):
+            if file_path.suffix.lower() in extensions:
+                result = self.process_file(
+                    file_path=str(file_path),
+                    patient_hint=patient_hint,
+                    dry_run=dry_run,
+                )
+                if result:
+                    results.append(result)
+
+        logger.info(f"Processed {len(results)} files from {directory}")
+        return results
+
+    def setup(self, family_members: list[str] | None = None):
+        """Initial setup: create folder structure and spreadsheet."""
+        family = self.config.get("family", [])
+        family_names = family_members or (
+            [m.get("name", "Unknown") for m in family] if family else ["Alice", "Bob", "Charlie"]
+        )
+
+        logger.info("Setting up HSA receipt system...")
+
+        # Create folder structure
+        folders = self.gdrive.setup_folder_structure(
+            year=datetime.now().year,
+            family_members=family_names,
+        )
+        logger.info(f"Created {len(folders)} folders in Google Drive")
+
+        # Initialize spreadsheet
+        _ = self.sheets._get_worksheet()
+        logger.info(f"Spreadsheet ready: {self.sheets._spreadsheet.url}")
+
+        print("\n Setup complete!")
+        print(f" Google Drive: {len(folders)} folders created")
+        print(f" Spreadsheet: {self.sheets._spreadsheet.url}")
+
+        return {
+            "folders": folders,
+            "spreadsheet_url": self.sheets._spreadsheet.url,
+        }
+
+    def get_summary(self) -> dict:
+        """Get summary of all HSA expenses."""
+        summary = self.sheets.get_summary_by_year()
+        unreimbursed = self.sheets.get_unreimbursed_total()
+
+        return {
+            "by_year": summary,
+            "total_unreimbursed": unreimbursed,
+            "pending_review": self.sheets.get_pending_review(),
+            "eligibility_review": self.sheets.get_eligibility_review(),
+            "amount_review": self.sheets.get_amount_review(),
+            "patient_review": self.sheets.get_patient_review(),
+            "duplicate_ids": self.sheets.duplicate_ids(),
+        }
+
+    def confirm_record(self, record_id: int) -> dict:
+        """Mark a reviewed record Confirmed so it counts in totals.
+
+        Returns the record as read back. update_record reports success even when
+        no column matched (e.g. a sheet without Review Status), so the stored
+        value is the only proof the confirm landed.
+        """
+        if not self.sheets.update_record(record_id, {REVIEW_STATUS: REVIEW_CONFIRMED}):
+            raise ValueError(f"Record ID {record_id} not found")
+        record = next(
+            (r for r in self.sheets.get_all_records() if str(r.get("ID")) == str(record_id)),
+            None,
+        )
+        stored = None if record is None else record.get(REVIEW_STATUS)
+        if stored != REVIEW_CONFIRMED:
+            raise RuntimeError(
+                f"Record ID {record_id} reads {REVIEW_STATUS}={stored!r} after confirming"
+            )
+        return record
+
+    def get_reconciliation(self, year: int) -> dict:
+        """Get reconciliation report for a given year."""
+        oop_max = self.config.get("hsa", {}).get("oop_max", 6000)
+        oop_progress = self.sheets.get_oop_progress(year)
+        patient_breakdown = self.sheets.get_oop_breakdown_by_patient(year)
+        unmatched = self.sheets.get_unmatched_records(year)
+        variances = self.sheets.get_linked_variances(year)
+        suggestions = self.sheets.suggest_record_links(year)
+
+        return {
+            "year": year,
+            "oop_max": oop_max,
+            "oop_progress": oop_progress,
+            "patient_breakdown": patient_breakdown,
+            "unmatched": unmatched,
+            "variances": variances,
+            "suggestions": suggestions,
+            "pending_review_count": sum(
+                1
+                for r in self.sheets.get_pending_review()["records"]
+                if self.sheets._matches_year(r, year)
+            ),
+        }
+
+
+def _print_patient_review(review: dict) -> None:
+    """List unconfirmed records whose patient was not on the document and was defaulted."""
+    records = review["records"]
+    if not records:
+        return
+    from rich.markup import escape
+
+    console.print(
+        f" [yellow]Patient not identified: {len(records)} record(s) filed under the default "
+        "family member[/yellow]"
+    )
+    for r in records:
+        console.print(
+            "   "
+            + escape(
+                f"#{r.get('ID', '')} {r.get('Service Date', '')} "
+                f"{r.get('Original Provider') or r.get('Provider', '')} | filed under "
+                f"{r.get('Patient', '')} | ${_safe_float(r.get('Patient Responsibility')):,.2f}"
+            )
+        )
+    console.print(
+        "   Correct Patient in the sheet (and move the file in Drive) if needed, then "
+        "lazy-hsa confirm <id>."
+    )
+
+
+def _print_amount_review(review: dict) -> None:
+    """List unconfirmed records whose extracted amounts disagreed with each other. A
+    five-procedure EOB was once recorded at its first line's subtotal (#112)."""
+    records = review["records"]
+    if not records:
+        return
+    from rich.markup import escape
+
+    console.print(
+        f" [red]Amounts did not reconcile: {len(records)} record(s). Check each against its "
+        "document before confirming[/red]"
+    )
+    for r in records:
+        notes = str(r.get("Notes") or "")
+        start = notes.find("[Amounts do not reconcile")
+        # The tag's text contains no "]" (reconcile_amounts builds it), so the first one ends it.
+        why = notes[start : notes.find("]", start) + 1] if start >= 0 else ""
+        console.print(
+            "   "
+            + escape(
+                f"#{r.get('ID', '')} {r.get('Service Date', '')} "
+                f"{r.get('Original Provider') or r.get('Provider', '')} | {r.get('Patient', '')} | "
+                f"{why}"
+            )
+        )
+    console.print(
+        "   Correct Patient Responsibility in the sheet if needed, then lazy-hsa confirm <id>."
+    )
+
+
+def _print_eligibility_review(review: dict) -> None:
+    """List records marked not HSA-eligible that nobody has reviewed. A wrong "No"
+    otherwise only shows as "$0.00", which is how nine provider bills sat out of
+    the total (#110)."""
+    records = review["records"]
+    if not records:
+        return
+    from rich.markup import escape
+
+    amount = sum(_safe_float(r.get("Patient Responsibility")) for r in records)
+    console.print(
+        f" [yellow]Marked NOT HSA-eligible, not yet reviewed: {len(records)} record(s), "
+        f"${amount:,.2f} kept out of Total Unreimbursed[/yellow]"
+    )
+    for r in records:
+        why = _suspect_pre_hsa_reason(r) or (
+            str(r.get("Notes") or "no reason recorded").split("[capture sha256:")[0].strip()
+        )
+        console.print(
+            "   "
+            + escape(
+                f"#{r.get('ID', '')} {r.get('Service Date', '')} "
+                f"{r.get('Original Provider') or r.get('Provider', '')} | {r.get('Patient', '')} | "
+                f"${_safe_float(r.get('Patient Responsibility')):,.2f} | why: {why[:90]}"
+            )
+        )
+    console.print(
+        "   If eligible, set HSA Eligible to Yes in the sheet. To keep one excluded, "
+        "set its Review Status to Confirmed."
+    )
+
+
+# CLI using Click
+try:
+    import click
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+
+    @click.group()
+    @click.option("--config", default="config/config.yaml", help="Config file path")
+    @click.pass_context
+    def cli(ctx, config):
+        """HSA Receipt Processing Pipeline"""
+        ctx.ensure_object(dict)
+        ctx.obj["pipeline"] = HSAReceiptPipeline(config_path=config)
+
+    @cli.command()
+    @click.option("--family", multiple=True, help="Family member names")
+    @click.pass_context
+    def setup(ctx, family):
+        """Initial setup: create folder structure and spreadsheet."""
+        pipeline = ctx.obj["pipeline"]
+        _refuse_after_cutover(pipeline, "setup")
+        family_list = list(family) if family else None
+        pipeline.setup(family_members=family_list)
+
+    @cli.command()
+    @click.option("--file", "file_path", help="Single file to process")
+    @click.option("--dir", "dir_path", help="Directory to process")
+    @click.option("--patient", help="Patient name hint")
+    @click.option("--dry-run", is_flag=True, help="Preview without uploading")
+    @click.pass_context
+    def process(ctx, file_path, dir_path, patient, dry_run):
+        """Process receipt files."""
+        import json
+
+        pipeline = ctx.obj["pipeline"]
+        if not dry_run:
+            _refuse_after_cutover(pipeline, "process")
+
+        if file_path:
+            result = pipeline.process_file(file_path, patient_hint=patient, dry_run=dry_run)
+            if result:
+                console.print_json(json.dumps(result, indent=2, default=str))
+                _print_confirm_hint([result])
+        elif dir_path:
+            results = pipeline.process_directory(dir_path, patient_hint=patient, dry_run=dry_run)
+            console.print(f"Processed {len(results)} files")
+            for r in results:
+                status = "[yellow]REVIEW[/yellow]" if r.get("needs_review") else "[green]OK[/green]"
+                console.print(
+                    f"  {status} {r['extraction']['provider_name']}: ${r['extraction']['patient_responsibility']:.2f}"
+                )
+            _print_confirm_hint(results)
+        else:
+            console.print("[red]Specify --file or --dir[/red]")
+
+    def _written_record_ids(results: list[dict]) -> list[int]:
+        """Record IDs written by process_file results (single receipt or multi-claim)."""
+        ids = []
+        for result in results:
+            if result.get("record_id") is not None:
+                ids.append(result["record_id"])
+            for claim in result.get("claims_processed", []):
+                if claim.get("record_id") is not None:
+                    ids.append(claim["record_id"])
+        return ids
+
+    def _print_confirm_hint(results: list[dict]) -> None:
+        ids = _written_record_ids(results)
+        if ids:
+            console.print(
+                f"\n[yellow]{len(ids)} new record(s) are Pending review and not counted in "
+                f"totals.[/yellow] After checking them: lazy-hsa confirm {' '.join(map(str, ids))}"
+            )
+
+    @cli.command()
+    @click.argument("record_ids", nargs=-1, type=int, required=True)
+    @click.pass_context
+    def confirm(ctx, record_ids):
+        """Mark reviewed records Confirmed so they count in totals."""
+        pipeline = ctx.obj["pipeline"]
+        _refuse_after_cutover(pipeline, "confirm")
+        failed = 0
+        for record_id in record_ids:
+            try:
+                r = pipeline.confirm_record(record_id)
+            except (ValueError, RuntimeError) as e:
+                console.print(f"[red]Not confirmed[/red] #{record_id}: {e}")
+                failed += 1
+                continue
+            console.print(
+                f"[green]Confirmed[/green] #{record_id} {r.get('Service Date', '')} | "
+                f"{r.get('Provider', '')} | {r.get('Patient', '')} | "
+                f"${_safe_float(r.get('Patient Responsibility')):,.2f}"
+            )
+        if failed:
+            raise SystemExit(1)
+
+    @cli.command("migrate-sheet")
+    @click.option("--apply", is_flag=True, help="Write the change (default: dry run)")
+    @click.pass_context
+    def migrate_sheet(ctx, apply):
+        """Add the Review Status column to the master sheet (dry run unless --apply)."""
+        pipeline = ctx.obj["pipeline"]
+        if apply:
+            _refuse_after_cutover(pipeline, "migrate-sheet")
+        try:
+            console.print(pipeline.sheets.migrate_review_status_column(apply=apply))
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            raise SystemExit(1) from None
+
+    @cli.command()
+    @click.pass_context
+    def summary(ctx):
+        """Show HSA expense summary."""
+        pipeline = ctx.obj["pipeline"]
+        data = pipeline.get_summary()
+
+        table = Table(title="HSA Expense Summary")
+        table.add_column("Year")
+        table.add_column("Receipts", justify="right")
+        table.add_column("Billed", justify="right")
+        table.add_column("Insurance", justify="right")
+        table.add_column("Your Cost", justify="right")
+        table.add_column("Reimbursed", justify="right")
+
+        for year, info in sorted(data["by_year"].items()):
+            table.add_row(
+                str(year),
+                str(info["count"]),
+                f"${info['total_billed']:,.2f}",
+                f"${info['total_insurance']:,.2f}",
+                f"${info['total_responsibility']:,.2f}",
+                f"${info['total_reimbursed']:,.2f}",
+            )
+
+        console.print(table)
+        console.print(f"\n Total Unreimbursed: [bold]${data['total_unreimbursed']:,.2f}[/bold]")
+        for record_id, rows in sorted(data["duplicate_ids"].items()):
+            console.print(
+                f" [red]ID {record_id} is on {rows} rows[/red]: confirm, link and delete refuse it "
+                "until each row has its own ID in the sheet"
+            )
+
+        _print_eligibility_review(data["eligibility_review"])
+        _print_amount_review(data["amount_review"])
+        _print_patient_review(data["patient_review"])
+
+        pending = data["pending_review"]
+        if not pending["count"]:
+            console.print(" Awaiting review: none")
+            return
+        amount = round(pending["unreimbursed_amount"], 2)
+        phrase = (
+            f"lower the total by [bold]${abs(amount):,.2f}[/bold]"
+            if amount < 0
+            else f"add [bold]${abs(amount):,.2f}[/bold] to Total Unreimbursed"
+        )
+        console.print(
+            f" Awaiting review (not counted above): [bold]{pending['count']}[/bold] record(s); "
+            f"confirming them would {phrase}"
+        )
+
+        confirm_effects = pipeline.sheets.get_confirm_effects()
+
+        pending_table = Table()
+        for col_name, justify in [
+            ("ID", "right"),
+            ("Date", None),
+            ("Provider", None),
+            ("Patient", None),
+            ("Type", None),
+            ("Amount", "right"),
+            ("Effect on total if confirmed", "right"),
+            ("Linked", None),
+            ("Review Status", None),
+        ]:
+            pending_table.add_column(col_name, justify=justify)
+        for r in pending["records"]:
+            # The effects are a second read: a record confirmed or added in between has
+            # no entry. Rounded so a float residue never prints as -$0.00.
+            effect = round(confirm_effects.get(r["ID"], 0.0), 2)
+            pending_table.add_row(
+                str(r.get("ID", "")),
+                r.get("Service Date", ""),
+                r.get("Original Provider") or r.get("Provider", ""),
+                r.get("Patient", ""),
+                r.get("Document Type", ""),
+                f"${_safe_float(r.get('Patient Responsibility')):,.2f}",
+                f"{'-' if effect < 0 else ''}${abs(effect):,.2f}"
+                + (" (not HSA-eligible)" if str(r.get("HSA Eligible")).strip() == "No" else ""),
+                str(r.get("Linked Record ID", "")),
+                str(r.get(REVIEW_STATUS, "")),
+            )
+        console.print(pending_table)
+        # This section is live only for the Sheet backend and goes away at cutover (#71).
+        held = pending["held_out_records"]
+        if held:
+            ids = ", ".join(f"#{r.get('ID', '')}" for r in held)
+            console.print(
+                f" {len(held)} confirmed record(s) ({ids}) left Total Unreimbursed "
+                f"(${pending['held_out_amount']:,.2f}) when a record awaiting review was "
+                "linked to them. Confirming that record counts its own amount (its "
+                "Adds on confirm) in their place; they stay excluded either way."
+            )
+        console.print(" After checking each one: lazy-hsa confirm <id> [<id> ...]")
+
+    def _print_oop_progress(year, total_oop, oop_max):
+        """Render the OOP spending progress bar."""
+        remaining = max(0, oop_max - total_oop)
+        pct = (total_oop / oop_max * 100) if oop_max > 0 else 0
+
+        console.print(f"\n[bold]{year} Out-of-Pocket Progress[/bold]")
+        bar_width = 40
+        filled = int(bar_width * min(pct, 100) / 100)
+        empty = bar_width - filled
+        if pct >= 90:
+            color = "red"
+        elif pct >= 70:
+            color = "yellow"
+        else:
+            color = "green"
+        bar = f"[{color}]{'━' * filled}[/{color}]{'━' * empty}"
+        console.print(f"  {bar}  ${total_oop:,.2f} / ${oop_max:,.2f} ({pct:.0f}%)")
+        console.print(f"  Remaining: ${remaining:,.2f}")
+
+    def _print_record_section(title, records, empty_msg, columns, row_fn):
+        """Render a titled table section, or a success message if empty.
+
+        Returns the number of records (for attention counting).
+        Columns are (name, justify) tuples where justify is "right" or None.
+        """
+        if not records:
+            console.print(f"\n[green]{empty_msg}[/green]")
+            return 0
+        console.print(f"\n[bold]{title} ({len(records)})[/bold]")
+        table = Table()
+        for col_name, justify in columns:
+            table.add_column(col_name, justify=justify)
+        for r in records:
+            table.add_row(*row_fn(r))
+        console.print(table)
+        return len(records)
+
+    @cli.command()
+    @click.option(
+        "--year", default=datetime.now().year, type=int, help="Year to reconcile (default: current)"
+    )
+    @click.option("--push", is_flag=True, help="Push summary to Google Sheets Reconciliation tab")
+    @click.pass_context
+    def reconcile(ctx, year, push):
+        """Reconcile EOBs against statements and track OOP progress."""
+        pipeline = ctx.obj["pipeline"]
+        if push:
+            _refuse_after_cutover(pipeline, "reconcile")
+        data = pipeline.get_reconciliation(year)
+
+        total_oop = data["oop_progress"]["total_oop"]
+        oop_max = data["oop_max"]
+
+        _print_oop_progress(year, total_oop, oop_max)
+        if data["pending_review_count"]:
+            console.print(
+                f"  [yellow]{data['pending_review_count']} record(s) awaiting review are not "
+                "counted in these figures[/yellow] (lazy-hsa summary lists them)"
+            )
+
+        # Per-patient breakdown
+        breakdown = data.get("patient_breakdown", [])
+        if breakdown:
+            console.print("\n[bold]Per-Patient Breakdown[/bold]")
+            table = Table()
+            table.add_column("Patient")
+            table.add_column("Total OOP", justify="right")
+            table.add_column("% of Max", justify="right")
+            for entry in breakdown:
+                pct = (entry["total_oop"] / oop_max * 100) if oop_max > 0 else 0
+                table.add_row(
+                    entry["patient"],
+                    f"${entry['total_oop']:,.2f}",
+                    f"{pct:.1f}%",
+                )
+            console.print(table)
+
+        record_columns = [
+            ("ID", "right"),
+            ("Date", None),
+            ("Provider", None),
+            ("Patient", None),
+            ("Amount", "right"),
+        ]
+
+        def _stmt_row(r):
+            return (
+                str(r.get("ID", "")),
+                r.get("Service Date", ""),
+                r.get("Provider", ""),
+                r.get("Patient", ""),
+                f"${_safe_float(r.get('Patient Responsibility')):,.2f}",
+                r.get("Document Type", ""),
+            )
+
+        def _eob_row(r):
+            provider = r.get("Original Provider") or r.get("Provider", "")
+            return (
+                str(r.get("ID", "")),
+                r.get("Service Date", ""),
+                provider,
+                r.get("Patient", ""),
+                f"${_safe_float(r.get('Patient Responsibility')):,.2f}",
+            )
+
+        attention_count = 0
+
+        attention_count += _print_record_section(
+            "Statements Without Matching EOB",
+            data["unmatched"]["unmatched_statements"],
+            "All statements have matching EOBs",
+            record_columns + [("Type", None)],
+            _stmt_row,
+        )
+
+        attention_count += _print_record_section(
+            "EOB Claims Without Matching Statement",
+            data["unmatched"]["unmatched_eobs"],
+            "All EOB claims have matching statements",
+            record_columns,
+            _eob_row,
+        )
+
+        # Suggested links
+        suggestions = data.get("suggestions", {})
+        eob_sugg = suggestions.get("eob_suggestions", [])
+        stmt_sugg = suggestions.get("statement_suggestions", [])
+
+        if eob_sugg:
+            console.print(f"\n[bold]Suggested Links for Unmatched EOBs ({len(eob_sugg)})[/bold]")
+            for entry in eob_sugg:
+                rec = entry["record"]
+                provider = rec.get("Original Provider") or rec.get("Provider", "")
+                console.print(
+                    f"\n  EOB #{rec.get('ID', '')}: {provider} | "
+                    f"{rec.get('Service Date', '')} | {rec.get('Patient', '')}"
+                )
+                tbl = Table(show_header=True, pad_edge=False, box=None)
+                tbl.add_column("Confidence")
+                tbl.add_column("Stmt #", justify="right")
+                tbl.add_column("Provider")
+                tbl.add_column("Date")
+                tbl.add_column("Amount", justify="right")
+                tbl.add_column("Date Diff")
+                for m in entry["matches"]:
+                    stars = "\u2605" * m["stars"] + "\u2606" * (3 - m["stars"])
+                    tbl.add_row(
+                        stars,
+                        str(m["record_id"]),
+                        m["provider"],
+                        m["service_date"],
+                        f"${m['amount']:,.2f}",
+                        f"{m['date_diff_days']}d",
+                    )
+                console.print(tbl)
+
+        if stmt_sugg:
+            console.print(
+                f"\n[bold]Suggested Links for Unmatched Statements ({len(stmt_sugg)})[/bold]"
+            )
+            for entry in stmt_sugg:
+                rec = entry["record"]
+                console.print(
+                    f"\n  Stmt #{rec.get('ID', '')}: {rec.get('Provider', '')} | "
+                    f"{rec.get('Service Date', '')} | {rec.get('Patient', '')}"
+                )
+                tbl = Table(show_header=True, pad_edge=False, box=None)
+                tbl.add_column("Confidence")
+                tbl.add_column("EOB #", justify="right")
+                tbl.add_column("Provider")
+                tbl.add_column("Date")
+                tbl.add_column("Amount", justify="right")
+                tbl.add_column("Date Diff")
+                for m in entry["matches"]:
+                    stars = "\u2605" * m["stars"] + "\u2606" * (3 - m["stars"])
+                    tbl.add_row(
+                        stars,
+                        str(m["record_id"]),
+                        m["provider"],
+                        m["service_date"],
+                        f"${m['amount']:,.2f}",
+                        f"{m['date_diff_days']}d",
+                    )
+                console.print(tbl)
+
+        # Variances
+        variances = data["variances"]
+        if variances:
+            console.print(f"\n[bold]Amount Variances ({len(variances)})[/bold]")
+            table = Table()
+            for col_name, justify in [
+                ("EOB #", "right"),
+                ("Stmt #", "right"),
+                ("Date", None),
+                ("Provider", None),
+                ("Patient", None),
+                ("EOB Amt", "right"),
+                ("Stmt Amt", "right"),
+                ("Variance", "right"),
+            ]:
+                table.add_column(col_name, justify=justify)
+            for v in variances:
+                var = v["variance"]
+                var_color = "red" if var < 0 else "yellow"
+                table.add_row(
+                    str(v["eob_id"]),
+                    str(v["statement_id"]),
+                    v["service_date"],
+                    v["provider"],
+                    v["patient"],
+                    f"${v['eob_amount']:,.2f}",
+                    f"${v['statement_amount']:,.2f}",
+                    f"[{var_color}]${var:+,.2f}[/{var_color}]",
+                )
+            console.print(table)
+            attention_count += len(variances)
+        else:
+            console.print("\n[green]No amount variances between linked records[/green]")
+
+        # Summary footer
+        if attention_count:
+            console.print(f"\n[bold yellow]{attention_count} items need attention[/bold yellow]")
+        else:
+            console.print("\n[bold green]All reconciled[/bold green]")
+
+        # Reimbursement view
+        visits = pipeline.sheets.reconcile_for_reimbursement(year)
+        claimable = [v for v in visits if v.get("Ready to Claim?") == "Yes"]
+        pending = [v for v in visits if v.get("Ready to Claim?") == "No"]
+        overbilled = [v for v in visits if v.get("Overbilled?")]
+
+        total_claimable = sum(visit_amount(v) for v in claimable)
+        total_pending = sum(visit_amount(v) for v in pending)
+
+        console.print(f"\n[bold]Reimbursement View ({len(visits)} visits)[/bold]")
+        reimb_table = Table()
+        reimb_table.add_column("Date")
+        reimb_table.add_column("Patient")
+        reimb_table.add_column("Provider")
+        reimb_table.add_column("Category")
+        reimb_table.add_column("EOB Amt", justify="right")
+        reimb_table.add_column("Stmt Amt", justify="right")
+        reimb_table.add_column("Overbilled")
+        reimb_table.add_column("Ready")
+        reimb_table.add_column("Gap")
+        for v in visits:
+            ready = v.get("Ready to Claim?", "")
+            ready_style = "green" if ready == "Yes" else "red" if ready == "No" else "dim"
+            overbill = v.get("Overbilled?", "")
+            overbill_style = f"[bold red]{overbill}[/bold red]" if overbill else ""
+            eob_amt = f"${v['EOB Amount']:,.2f}" if v.get("EOB Amount") != "" else ""
+            stmt_amt = f"${v['Statement Amount']:,.2f}" if v.get("Statement Amount") != "" else ""
+            reimb_table.add_row(
+                v.get("Service Date", ""),
+                v.get("Patient", ""),
+                v.get("Provider", ""),
+                v.get("Category", ""),
+                eob_amt,
+                stmt_amt,
+                overbill_style,
+                f"[{ready_style}]{ready}[/{ready_style}]",
+                v.get("Gap", ""),
+            )
+        console.print(reimb_table)
+        console.print(
+            f"\n  Ready to claim: [green]${total_claimable:,.2f}[/green]"
+            f"  |  Pending: [yellow]${total_pending:,.2f}[/yellow]"
+        )
+        if overbilled:
+            total_over = sum(
+                _safe_float(v.get("Statement Amount")) - _safe_float(v.get("EOB Amount"))
+                for v in overbilled
+            )
+            console.print(
+                f"  [bold red]OVERBILLED: {len(overbilled)} visits, "
+                f"${total_over:,.2f} overcharged — call providers![/bold red]"
+            )
+
+        # Push to Google Sheets
+        if push:
+            try:
+                unmatched = data["unmatched"]
+                url = pipeline.sheets.push_reconciliation_summary(
+                    year=year,
+                    oop_progress=total_oop,
+                    oop_max=oop_max,
+                    patient_breakdown=breakdown,
+                    unmatched_counts={
+                        "statements": len(unmatched["unmatched_statements"]),
+                        "eobs": len(unmatched["unmatched_eobs"]),
+                    },
+                    variance_count=len(variances),
+                    pending_review_count=data["pending_review_count"],
+                )
+                console.print(f"\n[green]Pushed reconciliation summary:[/green] {url}")
+            except Exception as e:
+                console.print(f"\n[red]Failed to push reconciliation summary: {e}[/red]")
+
+            try:
+                url = pipeline.sheets.push_reimbursement_view(visits)
+                console.print(f"[green]Pushed reimbursement view:[/green] {url}")
+            except Exception as e:
+                console.print(f"\n[red]Failed to push reimbursement view: {e}[/red]")
+
+    @cli.command("email-scan")
+    @click.option("--since", help="Scan emails since date (YYYY-MM-DD)")
+    @click.option("--dry-run", is_flag=True, help="Preview without processing")
+    @click.option("--output-dir", default="tmp/email_attachments", help="Where to save attachments")
+    @click.pass_context
+    def email_scan(ctx, since, dry_run, output_dir):
+        """Scan Gmail for medical emails and process attachments."""
+        from pathlib import Path
+
+        from extractors.gmail_extractor import GmailExtractor
+
+        pipeline = ctx.obj["pipeline"]
+        if not dry_run:
+            _refuse_after_cutover(pipeline, "email-scan")
+        config = pipeline.config
+
+        # Get credentials path from config
+        gdrive_config = config.get("google_drive", {})
+        creds_file = gdrive_config.get(
+            "credentials_file", "config/credentials/gdrive_credentials.json"
+        )
+        token_file = "config/credentials/gmail_token.json"
+
+        # Parse since date (default: HSA start date)
+        since_date = datetime.strptime(since, "%Y-%m-%d") if since else pipeline.hsa_start_date
+
+        console.print(f"[cyan]Scanning emails since {since_date.strftime('%Y-%m-%d')}...[/cyan]")
+
+        extractor = GmailExtractor(credentials_file=creds_file, token_file=token_file)
+
+        # Create output dir
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Extract medical emails
+        messages = extractor.extract_medical_emails(after_date=since_date, output_dir=output_path)
+
+        console.print(f"\n[green]Found {len(messages)} medical emails[/green]")
+
+        # Count and list attachments
+        total_attachments = 0
+        for msg in messages:
+            if msg.attachments:
+                total_attachments += len(msg.attachments)
+                console.print(
+                    f"  {msg.date.strftime('%Y-%m-%d')} | {msg.sender[:40]} | {msg.subject[:50]}"
+                )
+                for att in msg.attachments:
+                    console.print(f"    └─ [blue]{att.filename}[/blue] ({att.mime_type})")
+
+        console.print(f"\n[cyan]Total attachments: {total_attachments}[/cyan]")
+
+        if dry_run:
+            console.print("[yellow]Dry run - not processing files[/yellow]")
+            return
+
+        # Process each PDF attachment
+        if total_attachments > 0:
+            console.print("\n[cyan]Processing attachments through pipeline...[/cyan]")
+            processed = 0
+            written = []
+            for msg in messages:
+                for att in msg.attachments:
+                    if att.mime_type == "application/pdf" or att.filename.lower().endswith(".pdf"):
+                        # Save to temp file
+                        filepath = output_path / f"{msg.date.strftime('%Y%m%d')}_{att.filename}"
+                        with open(filepath, "wb") as f:
+                            f.write(att.data)
+
+                        console.print(f"\nProcessing: {att.filename}")
+                        result = pipeline.process_file(str(filepath), dry_run=False)
+                        if result:
+                            processed += 1
+                            written.append(result)
+                            status = (
+                                "[green]OK[/green]"
+                                if not result.get("needs_review")
+                                else "[yellow]REVIEW[/yellow]"
+                            )
+                            console.print(
+                                f"  {status} {result['extraction']['provider_name']}: ${result['extraction']['patient_responsibility']:.2f}"
+                            )
+
+            console.print(f"\n[green]Processed {processed} attachments[/green]")
+            _print_confirm_hint(written)
+
+    def _refuse_after_cutover(pipeline, command: str) -> None:
+        import httpx
+
+        from src.cutover_guard import cutover as probe_cutover
+
+        base_url = (pipeline.config.get("capture") or {}).get("base_url")
+        if not base_url:
+            return
+        try:
+            cutover = probe_cutover(base_url)
+        except (httpx.HTTPError, ValueError, KeyError):
+            return
+        if cutover:
+            console.print(
+                f"The server ledger is now the record, so lazy-hsa {command} is disabled. "
+                "Use the browser writer; python -m src.storage.backfill_export still copies the Sheet. "
+                "To return to the Sheet, the owner removes the CUTOVER file on the server "
+                "(docs/capture/DEPLOY.md, Cutover guard)."
+            )
+            raise SystemExit(1)
+
+    def _preflight_or_exit(pipeline) -> None:
+        """Validate API tokens and the Review Status column before doing any work."""
+        try:
+            console.print("[cyan]Validating API tokens...[/cyan]")
+            pipeline.preflight_check()
+            console.print("[green]API tokens OK[/green]\n")
+        except RuntimeError as e:
+            console.print(f"[red]Pre-flight check failed: {e}[/red]")
+            console.print(
+                "[yellow]Delete expired token files in config/credentials/ "
+                "and re-run to re-authenticate.[/yellow]"
+            )
+            raise SystemExit(1) from None
+        try:
+            pipeline.sheets.check_review_status_column()
+        except Exception as e:
+            console.print(f"[red]Pre-flight check failed: {type(e).__name__}: {e}[/red]")
+            raise SystemExit(1) from None
+
+    @cli.command("inbox")
+    @click.option("--watch", is_flag=True, help="Continuously watch for new files")
+    @click.option("--interval", default=60, help="Polling interval in seconds (with --watch)")
+    @click.option(
+        "--dry-run", is_flag=True, help="Preview extraction without uploading or recording"
+    )
+    @click.pass_context
+    def inbox(ctx, watch, interval, dry_run):
+        """Process files from Google Drive _Inbox folder.
+
+        Drop receipt files into the _Inbox folder in Google Drive,
+        and this command will process them automatically.
+
+        Use --dry-run to test extraction on new receipt types without
+        modifying Drive folders or the tracking spreadsheet.
+        """
+        from watchers.inbox_watcher import DriveInboxWatcher
+
+        pipeline = ctx.obj["pipeline"]
+        if not dry_run:
+            _refuse_after_cutover(pipeline, "inbox")
+
+        if not dry_run:
+            _preflight_or_exit(pipeline)
+
+        def process_file(path, patient_hint=None):
+            return pipeline.process_file(path, patient_hint=patient_hint, dry_run=dry_run)
+
+        watcher = DriveInboxWatcher(
+            gdrive_client=pipeline.gdrive,
+            process_callback=process_file,
+            family_names=pipeline.family_names,
+            dry_run=dry_run,
+        )
+
+        mode_label = "[yellow][DRY RUN][/yellow] " if dry_run else ""
+
+        if watch:
+            console.print(
+                f"{mode_label}[cyan]Watching _Inbox folder (polling every {interval}s)...[/cyan]"
+            )
+            console.print("[yellow]Press Ctrl+C to stop[/yellow]\n")
+            watcher.watch(interval=interval)
+        else:
+            console.print(f"{mode_label}[cyan]Checking _Inbox folder...[/cyan]\n")
+            results = watcher.poll()
+
+            if not results:
+                console.print("[yellow]No files to process in _Inbox[/yellow]")
+            else:
+                for r in results:
+                    if "error" in r:
+                        console.print(f"[red]ERROR[/red] {r['file']}: {r['error']}")
+                    else:
+                        result = r["result"]
+
+                        # Handle multi-claim results (EOB/statement/claims) vs regular receipt
+                        if result.get("document_type") in ("eob", "statement", "prescription"):
+                            doc_label = result.get("document_type", "eob").upper()
+                            console.print(f"[cyan]{doc_label}[/cyan] {r['file']}:")
+                            console.print(f"    Type: {doc_label}")
+                            console.print(f"    Payer: {result.get('payer_name', 'Unknown')}")
+
+                            # Dry-run results have different keys than real-run results
+                            if "would_upload_to" in result:
+                                # Dry-run format
+                                console.print(f"    Category: {result.get('category', 'unknown')}")
+                                console.print(
+                                    f"    Confidence: {result.get('confidence_score', 0):.0%}"
+                                )
+                                console.print(f"    Would upload to: {result['would_upload_to']}")
+                                claims = result.get("eligible_claims", [])
+                                skipped = result.get("skipped_claims", [])
+                                if claims:
+                                    console.print(
+                                        f"    [green]Eligible claims ({len(claims)}):[/green]"
+                                    )
+                                    for claim in claims:
+                                        console.print(
+                                            f"      - {claim['patient_name']} | "
+                                            f"{claim['service_date']} | "
+                                            f"{claim['original_provider']} | "
+                                            f"${claim['patient_responsibility']:.2f}"
+                                        )
+                                if skipped:
+                                    console.print(
+                                        f"    [yellow]Skipped (pre-HSA) ({len(skipped)}):[/yellow]"
+                                    )
+                                    for claim in skipped:
+                                        console.print(
+                                            f"      - {claim['patient_name']} | "
+                                            f"{claim['service_date']} | "
+                                            f"{claim['original_provider']}"
+                                        )
+                            else:
+                                # Real-run format
+                                drive_file = result.get("drive_file", {})
+                                if drive_file:
+                                    console.print(f"    Uploaded: {drive_file.get('name', '')}")
+                                processed = result.get("claims_processed", [])
+                                skipped = result.get("claims_skipped", [])
+                                if processed:
+                                    console.print(
+                                        f"    [green]Recorded {len(processed)} claims:[/green]"
+                                    )
+                                    for entry in processed:
+                                        claim = entry.get("claim", {})
+                                        record_id = entry.get("record_id", "?")
+                                        linked = entry.get("linked_to")
+                                        link_str = f" (linked to #{linked})" if linked else ""
+                                        console.print(
+                                            f"      - #{record_id} {entry.get('patient', '')} | "
+                                            f"{claim.get('service_date', '')} | "
+                                            f"{claim.get('original_provider', '')} | "
+                                            f"${claim.get('patient_responsibility', 0):.2f}"
+                                            f"{link_str}"
+                                        )
+                                if skipped:
+                                    console.print(
+                                        f"    [yellow]Skipped (pre-HSA) ({len(skipped)}):[/yellow]"
+                                    )
+                        else:
+                            # Regular receipt
+                            ext = result["extraction"]
+                            status = (
+                                "[green]OK[/green]"
+                                if not result.get("needs_review")
+                                else "[yellow]REVIEW[/yellow]"
+                            )
+                            console.print(f"{status} {r['file']}:")
+                            console.print(f"    Provider: {ext['provider_name']}")
+                            console.print(f"    Patient: {ext['patient_name']}")
+                            console.print(f"    Date: {ext['service_date']}")
+                            console.print(f"    Amount: ${ext['patient_responsibility']:.2f}")
+                            console.print(f"    Category: {ext['category']}")
+                            console.print(f"    Confidence: {ext['confidence_score']:.0%}")
+                            if ext.get("notes"):
+                                console.print(f"    Notes: {ext['notes']}")
+
+                if dry_run:
+                    console.print(
+                        f"\n[yellow]Dry run complete - {len(results)} files previewed (not committed)[/yellow]"
+                    )
+                else:
+                    console.print(f"\n[green]Processed {len(results)} files[/green]")
+                    _print_confirm_hint([r["result"] for r in results if "result" in r])
+
+
+except ImportError:
+    # Fallback if click/rich not installed
+    def cli():
+        print("CLI requires click and rich. Run: uv add click rich")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    cli()

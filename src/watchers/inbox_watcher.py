@@ -1,0 +1,291 @@
+"""Google Drive _Inbox Watcher - monitors for new files and processes them."""
+
+import logging
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+from src.patient_hint import match_patient_hint
+
+logger = logging.getLogger(__name__)
+
+
+class DriveInboxWatcher:
+    """
+    Watch Google Drive _Inbox folder for new files and process them.
+
+    Usage:
+        watcher = DriveInboxWatcher(gdrive_client, process_callback)
+        watcher.poll()  # One-time check
+        watcher.watch(interval=60)  # Continuous polling
+    """
+
+    def __init__(
+        self,
+        gdrive_client,
+        process_callback: Callable[[str], dict],
+        inbox_folder_name: str = "_Inbox",
+        family_names: list[str] | None = None,
+        dry_run: bool = False,
+    ):
+        """
+        Args:
+            gdrive_client: GDriveClient instance
+            process_callback: Function(local_path, patient_hint) -> result dict
+            inbox_folder_name: Name of inbox folder to watch
+            family_names: List of family member names for filename-based patient detection
+            dry_run: If True, process files but don't delete from inbox
+        """
+        self.gdrive = gdrive_client
+        self.process_callback = process_callback
+        self.inbox_folder_name = inbox_folder_name
+        self.family_names = family_names or ["Alice", "Bob", "Charlie"]
+        self.dry_run = dry_run
+        self._inbox_folder_id = None
+        self._processed_files = set()  # Track processed file IDs
+
+    def _get_inbox_folder_id(self) -> str:
+        """Get or cache the _Inbox folder ID."""
+        if self._inbox_folder_id is None:
+            # Find the inbox folder under root
+            root_id = self.gdrive.get_or_create_folder(self.gdrive.root_folder_name)
+            self._inbox_folder_id = self.gdrive.get_or_create_folder(
+                self.inbox_folder_name, root_id
+            )
+        return self._inbox_folder_id
+
+    def list_inbox_files(self) -> list[dict]:
+        """List all files in the _Inbox folder."""
+        service = self.gdrive._get_service()
+        inbox_id = self._get_inbox_folder_id()
+
+        # Query for files in inbox (not folders)
+        query = f"'{inbox_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false"
+
+        results = (
+            service.files()
+            .list(
+                q=query,
+                fields="files(id, name, mimeType, createdTime, modifiedTime)",
+                orderBy="createdTime desc",
+                pageSize=100,
+            )
+            .execute()
+        )
+
+        return results.get("files", [])
+
+    def download_file(self, file_id: str, filename: str, download_dir: Path) -> Path:
+        """Download a file from Drive to local path."""
+        import io
+
+        from googleapiclient.http import MediaIoBaseDownload
+
+        service = self.gdrive._get_service()
+        download_dir.mkdir(parents=True, exist_ok=True)
+        local_path = download_dir / filename
+
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                logger.debug(f"Download progress: {int(status.progress() * 100)}%")
+
+        with open(local_path, "wb") as f:
+            f.write(fh.getvalue())
+
+        logger.info(f"Downloaded: {filename}")
+        return local_path
+
+    def move_file_to_folder(self, file_id: str, dest_folder_id: str):
+        """Move a file to a different folder (remove from inbox)."""
+        service = self.gdrive._get_service()
+
+        # Get current parents
+        file = service.files().get(fileId=file_id, fields="parents").execute()
+        previous_parents = ",".join(file.get("parents", []))
+
+        # Move to new folder
+        service.files().update(
+            fileId=file_id,
+            addParents=dest_folder_id,
+            removeParents=previous_parents,
+            fields="id, parents",
+        ).execute()
+
+    def delete_file(self, file_id: str):
+        """Remove a file from inbox.
+
+        First tries to trash the file. If that fails (e.g. file is owned by
+        another account and shared into _Inbox), falls back to removing the
+        file from the inbox folder without deleting it.
+        """
+        service = self.gdrive._get_service()
+        try:
+            service.files().update(fileId=file_id, body={"trashed": True}).execute()
+        except Exception:
+            # Can't trash files owned by others - remove from inbox folder instead
+            inbox_id = self._get_inbox_folder_id()
+            service.files().update(
+                fileId=file_id,
+                removeParents=inbox_id,
+                fields="id, parents",
+            ).execute()
+            logger.info("Removed shared file from inbox (not trashed, still in owner's Drive)")
+
+    def poll(self, download_dir: Path = None) -> list[dict]:
+        """
+        Check inbox for new files and process them.
+
+        Returns:
+            List of processing results
+        """
+        download_dir = download_dir or Path("tmp/inbox_downloads")
+        results = []
+
+        files = self.list_inbox_files()
+        logger.info(f"Found {len(files)} files in _Inbox")
+
+        for file_info in files:
+            file_id = file_info["id"]
+            filename = file_info["name"]
+
+            # Skip if already processed this session
+            if file_id in self._processed_files:
+                continue
+
+            # Skip non-receipt files
+            if not self._is_receipt_file(filename):
+                logger.debug(f"Skipping non-receipt file: {filename}")
+                continue
+
+            # Extract patient hint from filename
+            patient_hint = self._extract_patient_hint(filename)
+            if patient_hint:
+                logger.info(f"Processing: {filename} (patient hint: {patient_hint})")
+            else:
+                logger.info(f"Processing: {filename}")
+
+            try:
+                # Download file
+                local_path = self.download_file(file_id, filename, download_dir)
+
+                # Process through callback with patient hint
+                result = self.process_callback(str(local_path), patient_hint)
+
+                if result:
+                    results.append(
+                        {
+                            "file": filename,
+                            "file_id": file_id,
+                            "result": result,
+                        }
+                    )
+
+                    # Mark as processed
+                    self._processed_files.add(file_id)
+
+                    # Delete local temp file
+                    local_path.unlink(missing_ok=True)
+
+                    # Delete from inbox (unless dry run)
+                    if not self.dry_run:
+                        try:
+                            self.delete_file(file_id)
+                            logger.info(f"Processed and removed from inbox: {filename}")
+                        except Exception as del_err:
+                            logger.warning(
+                                f"Processed OK but couldn't remove from inbox: "
+                                f"{filename} ({del_err}). "
+                                f"File may need manual removal (e.g. shared by another account)."
+                            )
+                    else:
+                        logger.info(f"Dry run - file kept in inbox: {filename}")
+
+            except Exception as e:
+                logger.error(f"Error processing {filename}: {e}")
+                results.append(
+                    {
+                        "file": filename,
+                        "file_id": file_id,
+                        "error": str(e),
+                    }
+                )
+
+        return results
+
+    def _is_receipt_file(self, filename: str) -> bool:
+        """Check if file is a receipt type we can process."""
+        extensions = {
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".tiff",
+            ".bmp",
+            ".webp",
+            ".gif",
+            ".heic",
+            ".heif",
+            ".xlsx",
+        }
+        return Path(filename).suffix.lower() in extensions
+
+    def _extract_patient_hint(self, filename: str) -> str | None:
+        """Extract patient name hint from filename if a family name is present.
+
+        A name counts only as a whole word: letters on either side disqualify it,
+        while ``_``, ``-``, ``.``, digits and spaces are separators. When one match
+        sits inside a longer match (multi-word names) the longer one wins. If two
+        different names still match, no hint is returned, so the pipeline does not
+        override the LLM's patient; the hint does override it, so a guess here would be silent.
+
+        Examples:
+            "Amazon_Miralax_Bob.pdf" -> "Bob"
+            "CVS_Alice_prescription.jpg" -> "Alice"
+            "receipt.pdf" -> None
+            "Alice_Bob_shared.pdf" -> None
+        """
+        return match_patient_hint(filename, self.family_names)
+
+    def watch(self, interval: int = 60, max_iterations: int = None):
+        """
+        Continuously poll inbox for new files.
+
+        Args:
+            interval: Seconds between polls
+            max_iterations: Stop after N iterations (None = forever)
+        """
+        iteration = 0
+        logger.info(f"Starting inbox watcher (polling every {interval}s)")
+
+        try:
+            while max_iterations is None or iteration < max_iterations:
+                results = self.poll()
+
+                if results:
+                    logger.info(f"Processed {len(results)} files")
+                    for r in results:
+                        if "error" in r:
+                            logger.error(f"  {r['file']}: {r['error']}")
+                        else:
+                            logger.info(f"  {r['file']}: OK")
+
+                iteration += 1
+                if max_iterations is None or iteration < max_iterations:
+                    time.sleep(interval)
+
+        except KeyboardInterrupt:
+            logger.info("Watcher stopped by user")
+
+
+def create_watcher_from_pipeline(pipeline) -> DriveInboxWatcher:
+    """Create a watcher using the pipeline's process_file method."""
+    return DriveInboxWatcher(
+        gdrive_client=pipeline.gdrive,
+        process_callback=lambda path: pipeline.process_file(path, dry_run=False),
+    )

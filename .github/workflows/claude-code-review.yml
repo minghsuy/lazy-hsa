@@ -1,0 +1,85 @@
+name: Claude Code Review
+
+# Bridge workflow: posts `@claude review` as a PR comment using a PAT.
+#
+# Why a bridge: invoking claude-code-action@v1 from a `pull_request` event
+# hits an upstream Bun internal-error bug ("directory mismatch ... fd 4")
+# consistently and produces no review. The same action+ref+runtime invoked
+# from `issue_comment` (claude.yml) works reliably. So we route the
+# automated PR-event path through a PR comment that triggers claude.yml.
+#
+# Why a PAT (not GITHUB_TOKEN): GitHub Actions explicitly suppresses
+# downstream workflow triggers from events authored by GITHUB_TOKEN — the
+# recursion guard. A PAT-authored issue_comment event IS treated as a real
+# user event and DOES trigger downstream workflows. So the bridge requires
+# `BRIDGE_PAT` (fine-grained PAT, scope: Pull requests Read+Write).
+#
+# When upstream anthropics/claude-code-action#1266 is fixed, this workflow
+# can revert to a direct `anthropics/claude-code-action@v1` invocation; the PAT becomes
+# dead weight and can be removed.
+#
+# Setup (one-time, per repo with this workflow):
+# - Generate fine-grained PAT at https://github.com/settings/personal-access-tokens
+#   Permissions: Pull requests = Read and write. Scope to this repo only.
+# - Add as repo secret BRIDGE_PAT (Settings -> Secrets and variables -> Actions).
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# Cancel an older bridge run for this PR if a new push lands before it
+# finishes — prevents duplicate `@claude review` posts on rapid pushes.
+concurrency:
+  group: claude-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trigger-review:
+    # Skip on drafts. Skip on bot-authored PRs (Dependabot, Renovate) — those
+    # don't need automated AI review and would burn PAT API calls per push.
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.user.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    # Empty permissions block: gh pr comment uses BRIDGE_PAT (not GITHUB_TOKEN),
+    # so the job's GITHUB_TOKEN should have zero capability. Explicit `{}` is
+    # machine-readable and prevents capability inheritance from org defaults.
+    permissions: {}
+
+    steps:
+      - name: Post @claude review comment
+        env:
+          GH_TOKEN: ${{ secrets.BRIDGE_PAT }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          # Marker embedded in the bridge's comment body so the cleanup
+          # filter only matches bridge-posted comments. A human typing
+          # `@claude review` won't have this marker and stays untouched.
+          MARKER: '<!-- managed by claude-code-review.yml bridge; do not edit -->'
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+              echo "::error::BRIDGE_PAT secret is not set on this repo."
+              echo "::error::Setup: Settings -> Secrets and variables -> Actions ->"
+              echo "::error::  New repository secret. Name: BRIDGE_PAT,"
+              echo "::error::  Value: fine-grained PAT with Pull requests Read+Write"
+              echo "::error::Background: anthropics/claude-code-action#1266 - bridge"
+              echo "::error::routes auto-review through @claude mention path; PAT-authored"
+              echo "::error::events trigger downstream workflows, GITHUB_TOKEN ones don't."
+              exit 1
+          fi
+
+          BRIDGE_BODY="@claude review ${MARKER}"
+
+          # Delete prior bridge comments before posting the new one. Filter
+          # by the marker so only bridge-authored comments match; human
+          # @claude review comments (without the marker) are untouched.
+          # Note: `gh api`'s built-in `--jq` doesn't accept jq's `--arg`
+          # flag, so we pipe through standalone `jq` (available on every
+          # GitHub-hosted runner) to inject $BRIDGE_BODY safely.
+          # `|| true` prevents a transient DELETE failure from aborting
+          # the step before the new comment posts.
+          gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+              | jq -r --arg body "$BRIDGE_BODY" '.[] | select(.body == $body) | .id' \
+              | xargs -r -I{} gh api -X DELETE "repos/${REPO}/issues/comments/{}" \
+              || true
+
+          gh pr comment "$PR" -R "$REPO" --body "$BRIDGE_BODY"

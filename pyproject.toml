@@ -1,0 +1,148 @@
+[project]
+name = "lazy-hsa"
+version = "1.5.0"
+description = "Local AI-powered HSA receipt organization system"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+keywords = ["hsa", "receipts", "medical", "tax", "finance", "ollama", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
+
+dependencies = [
+    # Google APIs
+    "google-auth>=2.36.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-api-python-client>=2.150.0",
+    "gspread>=6.1.0",
+    # LLM client (OpenAI-compatible API for Ollama/vLLM)
+    "openai>=1.50.0",
+    # Email
+    "imapclient>=3.0.0",
+    "email-validator>=2.2.0",
+    # Image/PDF handling
+    "Pillow>=12.3.0",  # Security: fix EPS decoder infinite loop (CVE-2026-59203)
+    "pdf2image>=1.17.0",
+    "pypdf>=6.21.2",  # Security: fix inline-image parsing infinite loop (CVE-2026-59935, CVE-2026-59936); 6.21.2 is the first release with no open OSV advisory for pypdf
+    # Web scraping for portals (future)
+    "playwright>=1.49.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=6.1.0",
+    # Utilities
+    "pyyaml>=6.0",
+    "python-dateutil>=2.9.0",
+    "rich>=13.9.0",
+    "click>=8.1.0",
+    "watchdog>=6.0.0",
+    # the cutover probe and the capture client talk to the tailnet capture service (#90)
+    "httpx>=0.28.0",
+    # Data handling
+    "pandas>=2.2.0",
+    "openpyxl>=3.1.0",
+    "pillow-heif>=1.1.1",
+    "pdfplumber>=0.11.9",
+    # Security: explicit version constraints for transitive dependencies
+    "urllib3>=2.8.0",  # Fix decompression bomb bypass; 2.8.0 fixes HTTPS proxy TLS override and chunked/deflate DoS (CVE-2026-97687..97689)
+    "pyasn1>=0.6.4",   # Fix DoS in decoder (CVE-2026-59884, CVE-2026-59885, CVE-2026-59886)
+    "protobuf>=6.33.6",  # Fix JSON recursion depth bypass
+]
+
+[dependency-groups]
+# DGX-only: the capture service, review app and writer (src/capture_service.py,
+# src/review_app.py, src/writer_app.py). A dependency group never reaches the
+# wheel METADATA, so the public wheel does not advertise these. deploy.py
+# installs it with --no-dev --group capture.
+capture = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "python-multipart>=0.0.18",
+    "pypdfium2>=5.3.0",  # review app renders PDF pages; also transitive through pdfplumber
+]
+dev = [
+    # the capture tests import the services
+    {include-group = "capture"},
+    "packaging>=25.0",
+    "ruff>=0.8.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.24.0",
+    "pre-commit>=4.0.0",
+]
+
+[project.scripts]
+lazy-hsa = "src.pipeline:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+# Keep DGX-private modules out of the public wheel; add new private modules here.
+exclude = [
+    "src/weekly_mail.py",
+    "src/watchers/capture_pull.py",
+    "src/storage/backfill_export.py",
+    "src/capture_service.py",
+    "src/ingest.py",
+    "src/ingest_health.py",
+    "src/ingest_job.py",
+    "src/ledger_export.py",
+    "src/origin.py",
+    "src/review_app.py",
+    "src/review_pages.py",
+    "src/weekly_summary.py",
+    "src/writer_app.py",
+    "src/storage/backfill_import.py",
+    "src/storage/candidate_reader.py",
+    "src/storage/originals.py",
+    "src/storage/sqlite_client.py",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+]
+extend-select = ["C901", "PLR0912", "PLR0913", "PLR0915"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-args = 10
+max-branches = 15
+max-statements = 75
+
+[tool.ruff.lint.per-file-ignores]
+# 2026-09-02 baseline: remove or narrow each waiver when the file is substantively changed.
+"src/pipeline.py" = ["C901", "PLR0912", "PLR0915"]
+"src/processors/llm_extractor.py" = ["C901", "PLR0912", "PLR0915"]
+"src/storage/sheet_client.py" = ["C901", "PLR0912", "PLR0915"]
+# reconcile_for_reimbursement/suggest_record_links ported verbatim from sheet_client.py above.
+"src/storage/sqlite_client.py" = ["C901", "PLR0912", "PLR0915"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
