@@ -32,7 +32,8 @@ jobs:
           persist-credentials: false
 
       # An issue_comment run executes on main and fetches the PR branch by name, so nothing
-      # else in the log names the commit under review; the merge gate looks for this line.
+      # else in the log names the commit under review. dgx-infra's pr-watch-reviews.py
+      # binds the review to the head through this exact line format.
       - name: Record the reviewed PR head
         if: github.event.issue.pull_request || github.event.pull_request
         env:
@@ -40,7 +41,7 @@ jobs:
           PR: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          echo "PR head under review: $(gh pr view "$PR" -R "$REPO" --json headRefOid -q .headRefOid)"
+          echo "checkout target: $(gh pr view "$PR" -R "$REPO" --json headRefOid -q .headRefOid) (PR #$PR)"
 
       - name: Run Claude Code
         id: claude

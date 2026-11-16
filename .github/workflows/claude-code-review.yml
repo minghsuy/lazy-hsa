@@ -67,19 +67,18 @@ jobs:
               exit 1
           fi
 
-          # The owner's merge gate reads this exact line from Claude's last comment.
-          BRIDGE_BODY="@claude review. End the review with exactly one line: REVIEW-VERDICT: PASS if nothing must change before merge, otherwise REVIEW-VERDICT: FAIL. ${MARKER}"
+          # dgx-infra's pr-watch-reviews.py reads exactly one line-start REVIEW-VERDICT
+          # from Claude's comment; text matches dgx-infra's own bridge. Backticks are
+          # escaped (\`) because this is a bash double-quoted string.
+          BRIDGE_BODY="@claude review this PR. End your review with exactly one line containing the verdict: REVIEW-VERDICT: PASS if there are no blocking issues, or REVIEW-VERDICT: FAIL if there are blocking issues. If you have non-blocking observations (nits), wrap ONLY those observations between a line \`<!-- REVIEW-NITS:START -->\` and a line \`<!-- REVIEW-NITS:END -->\` (omit the block entirely when there are none). ${MARKER}"
 
-          # Delete prior bridge comments before posting the new one. Filter
-          # by the marker so only bridge-authored comments match; human
-          # @claude review comments (without the marker) are untouched.
-          # Note: `gh api`'s built-in `--jq` doesn't accept jq's `--arg`
-          # flag, so we pipe through standalone `jq` (available on every
-          # GitHub-hosted runner) to inject $BRIDGE_BODY safely.
-          # `|| true` prevents a transient DELETE failure from aborting
-          # the step before the new comment posts.
+          # Delete prior bridge comments, matched by the marker rather than the exact
+          # body, so older-format bridge comments are cleaned too. Human @claude
+          # comments carry no marker and stay. `gh api --jq` has no --arg, hence the
+          # standalone jq (on every GitHub-hosted runner). `|| true` keeps a transient
+          # DELETE failure from aborting the post.
           gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
-              | jq -r --arg body "$BRIDGE_BODY" '.[] | select(.body == $body) | .id' \
+              | jq -r --arg marker "$MARKER" '.[] | select(.body | contains($marker)) | .id' \
               | xargs -r -I{} gh api -X DELETE "repos/${REPO}/issues/comments/{}" \
               || true
 
