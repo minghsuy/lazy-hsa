@@ -67,7 +67,8 @@ jobs:
               exit 1
           fi
 
-          BRIDGE_BODY="@claude review ${MARKER}"
+          # The owner's merge gate reads this exact line from Claude's last comment.
+          BRIDGE_BODY="@claude review. End the review with exactly one line: REVIEW-VERDICT: PASS if nothing must change before merge, otherwise REVIEW-VERDICT: FAIL. ${MARKER}"
 
           # Delete prior bridge comments before posting the new one. Filter
           # by the marker so only bridge-authored comments match; human
