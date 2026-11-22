@@ -847,6 +847,27 @@ class TestReviewStatusWriter:
         assert pending["count"] == 1
         assert pending["unreimbursed_amount"] == pytest.approx(40.0)
 
+    @pytest.mark.parametrize("amount,cell", [(None, ""), (0, 0), (12.5, 12.5)])
+    def test_add_record_writes_absent_reimbursement_as_blank_cell(
+        self, sheets_client, amount, cell
+    ):
+        client = sheets_client()
+        client.add_record(_receipt(reimbursement_amount=amount))
+        client.add_record(_receipt(provider="Unrelated", reimbursement_amount=7))
+        column = GSheetsClient.HEADERS.index("Reimbursement Amount")
+        assert [row[column] for row in client._worksheet.rows] == [cell, 7]
+
+    @pytest.mark.parametrize("amount,cell", [(None, ""), (0, 0), (12.5, 12.5)])
+    def test_add_record_writes_absent_billed_and_insurance_as_blank_cells(
+        self, sheets_client, amount, cell
+    ):
+        client = sheets_client()
+        client.add_record(_receipt(billed_amount=amount, insurance_paid=amount))
+        billed = GSheetsClient.HEADERS.index("Billed Amount")
+        insurance = GSheetsClient.HEADERS.index("Insurance Paid")
+        row = client._worksheet.rows[0]
+        assert (row[billed], row[insurance]) == (cell, cell)
+
     def test_confirming_counts_it(self, sheets_client):
         client = sheets_client()
         record_id = client.add_record(_receipt(patient_responsibility=40.0))

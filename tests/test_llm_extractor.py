@@ -369,6 +369,163 @@ class TestVisionExtractorBuildReceipt:
         assert receipt.confidence_score == 0.5  # Default
 
 
+class TestBlankAmountsFromExtraction:
+    """An amount the document did not show is None, never $0; an explicit 0 stays 0."""
+
+    NOT_SHOWN = [None, "", "  ", "N/A", "not shown", "NaN", "Infinity", float("nan"), True]
+    ZERO = [0, 0.0, "0", "$0.00"]
+
+    @pytest.fixture
+    def extractor(self):
+        return VisionExtractor()
+
+    @staticmethod
+    def _eob(**amounts):
+        parsed = {
+            "provider_name": "Clinic",
+            "service_date": "2026-01-10",
+            "patient_name": "Bob",
+            "patient_responsibility": 45.00,
+            "eligible_subtotal": 0,
+            "document_type": "eob",
+        }
+        parsed.update(amounts)
+        return parsed
+
+    @pytest.mark.parametrize("value", NOT_SHOWN)
+    def test_receipt_amount_not_shown_is_none(self, extractor, value):
+        receipt = extractor._build_receipt(self._eob(billed_amount=value, insurance_paid=value))
+        assert receipt.billed_amount is None
+        assert receipt.insurance_paid is None
+        assert receipt.patient_responsibility == 45.00
+
+    def test_receipt_amount_keys_missing_is_none(self, extractor):
+        receipt = extractor._build_receipt(self._eob())
+        assert receipt.billed_amount is None
+        assert receipt.insurance_paid is None
+
+    @pytest.mark.parametrize("value", ZERO)
+    def test_receipt_explicit_zero_stays_zero(self, extractor, value):
+        receipt = extractor._build_receipt(self._eob(billed_amount=value, insurance_paid=value))
+        assert receipt.billed_amount == 0.0
+        assert receipt.insurance_paid == 0.0
+
+    def test_receipt_billed_falls_back_to_a_shown_subtotal_only(self, extractor):
+        shown = extractor._build_receipt(self._eob(document_type="statement", eligible_subtotal=30))
+        explicit = extractor._build_receipt(
+            self._eob(document_type="statement", eligible_subtotal=30, billed_amount=0)
+        )
+        assert shown.billed_amount == 30.0
+        assert explicit.billed_amount == 0.0
+
+    @staticmethod
+    def _claim(**amounts):
+        claim = {
+            "service_date": "2026-01-10",
+            "patient_name": "Alice",
+            "original_provider": "Clinic",
+            "service_type": "Visit",
+            "patient_responsibility": 20.00,
+        }
+        claim.update(amounts)
+        return claim
+
+    @pytest.mark.parametrize("value", NOT_SHOWN)
+    def test_claim_amount_not_shown_is_none(self, extractor, value):
+        result = extractor._build_multi_claim_extraction(
+            {"claims": [self._claim(billed_amount=value, insurance_paid=value)]}
+        )
+        claim = result.claims[0]
+        assert claim.billed_amount is None
+        assert claim.insurance_paid is None
+        assert claim.patient_responsibility == 20.00
+
+    def test_claim_amount_keys_missing_is_none(self, extractor):
+        claim = extractor._build_multi_claim_extraction({"claims": [self._claim()]}).claims[0]
+        assert claim.billed_amount is None
+        assert claim.insurance_paid is None
+
+    @pytest.mark.parametrize("value", ZERO)
+    def test_claim_explicit_zero_stays_zero(self, extractor, value):
+        result = extractor._build_multi_claim_extraction(
+            {"claims": [self._claim(billed_amount=value, insurance_paid=value)]}
+        )
+        assert result.claims[0].billed_amount == 0.0
+        assert result.claims[0].insurance_paid == 0.0
+
+    def test_payment_summary_without_plan_share_is_none(self, extractor):
+        parsed = {"payment_summary": [{"patient": "Alice", "provider": "Clinic", "your_share": 12}]}
+        claim = extractor._build_multi_claim_extraction(parsed).claims[0]
+        assert claim.insurance_paid is None
+        assert claim.billed_amount is None
+        assert claim.patient_responsibility == 12.0
+
+    def test_payment_summary_explicit_zero_plan_share_stays_zero(self, extractor):
+        parsed = {
+            "payment_summary": [
+                {"patient": "Alice", "provider": "Clinic", "your_share": 12, "plan_share": 0}
+            ]
+        }
+        assert extractor._build_multi_claim_extraction(parsed).claims[0].insurance_paid == 0.0
+
+    def test_services_without_billed_leave_billed_and_insurance_blank(self, extractor):
+        parsed = {
+            "services": [
+                {
+                    "patient": "Alice",
+                    "service_details": [
+                        {"date": "2026-01-10", "provider": "Clinic", "your_cost": 10},
+                        {
+                            "date": "2026-01-11",
+                            "provider": "Clinic",
+                            "your_cost": 10,
+                            "amount_billed": 40,
+                        },
+                    ],
+                }
+            ]
+        }
+        blank, shown = extractor._build_multi_claim_extraction(parsed).claims
+        assert (blank.billed_amount, blank.insurance_paid) == (None, None)
+        assert (shown.billed_amount, shown.insurance_paid) == (40.0, 30.0)
+
+    @staticmethod
+    def _xlsx(tmp_path, total_cost):
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(
+            [
+                "Fullname With YOB",
+                "Prescription Number",
+                "Drug Name",
+                "Drug Strength",
+                "Days Supply",
+                "Quantity",
+                "Pharmacy Name",
+                "Date Of Service",
+                "Total cost",
+                "Total you paid",
+            ]
+        )
+        ws.append(
+            ["Alice (1990)", "RX1", "Drug", "10mg", 30, 30, "Pharm", "01/10/2026", total_cost, 5]
+        )
+        path = tmp_path / "claims.xlsx"
+        wb.save(path)
+        return path
+
+    def test_xlsx_empty_total_cost_leaves_billed_and_insurance_blank(self, extractor, tmp_path):
+        claim = extractor._extract_xlsx_claims(self._xlsx(tmp_path, None)).claims[0]
+        assert (claim.billed_amount, claim.insurance_paid) == (None, None)
+        assert claim.patient_responsibility == 5.0
+
+    def test_xlsx_shown_total_cost_derives_insurance(self, extractor, tmp_path):
+        claim = extractor._extract_xlsx_claims(self._xlsx(tmp_path, 25)).claims[0]
+        assert (claim.billed_amount, claim.insurance_paid) == (25.0, 20.0)
+
+
 class TestMockExtractor:
     """Test the MockVisionExtractor for testing purposes."""
 
@@ -1068,6 +1225,15 @@ FSA or HSA eligible
         assert "grand total $24.16; gift card $3.61 applied]" in receipt.notes
         create.assert_called_once()
 
+    def test_page_without_items_subtotal_leaves_billed_blank(self, run_extract):
+        layout = self.LAYOUT_A.replace(" Item(s) Subtotal: $11.64", "")
+        receipt, _, _, _ = run_extract(layout)
+
+        assert receipt.provider_name == "Amazon"
+        assert round(receipt.patient_responsibility * 100) == 639
+        assert receipt.billed_amount is None
+        assert receipt.insurance_paid == 0
+
     @pytest.mark.parametrize("wrong_amount", [0, 9.99, 123.45])
     def test_page_amount_overrides_model_amount(self, run_extract, wrong_amount):
         receipt, create, _, _ = run_extract(self.LAYOUT_A, amount=wrong_amount)
@@ -1188,6 +1354,31 @@ FSA or HSA eligible
         assert receipt.patient_responsibility == 0
         create.assert_called_once()
 
+    def test_model_failure_billed_is_blank(self, run_extract):
+        receipt, _, _, _ = run_extract(self.LAYOUT_A, fail=True)
+        assert receipt.billed_amount is None
+
+    def test_model_failure_insurance_is_blank(self, run_extract):
+        receipt, _, _, _ = run_extract(self.LAYOUT_A, fail=True)
+        assert receipt.insurance_paid is None
+
+    def test_model_failure_preserves_other_fallback_fields(self, run_extract):
+        receipt, create, _, _ = run_extract(self.LAYOUT_A, fail=True)
+        assert receipt.provider_name == "Unknown (Extraction Failed)"
+        assert receipt.service_date is None
+        assert receipt.service_type == "Unknown (Needs Manual Review)"
+        assert receipt.patient_name == "Unknown"
+        assert receipt.patient_responsibility == 0
+        assert receipt.hsa_eligible is True
+        assert receipt.category == "unknown"
+        assert receipt.document_type == "unknown"
+        assert receipt.confidence_score == 0.1
+        assert receipt.notes == (
+            "Vision extraction failed - manual review required. Source: text extraction"
+        )
+        assert receipt.raw_extraction == {}
+        create.assert_called_once()
+
     def test_zero_eligible_multipage_does_not_call_model_again(self, run_extract):
         text = self.LAYOUT_A.replace("FSA or HSA eligible: $6.39", "FSA or HSA eligible: $0.00")
         receipt, create, _, _ = run_extract(text, multipage=True)
@@ -1195,6 +1386,101 @@ FSA or HSA eligible
         assert receipt.patient_responsibility == 0
         assert receipt.hsa_eligible is False
         create.assert_called_once()
+
+    def test_unparsed_eligible_marker_warns_and_tags(self, run_extract, caplog):
+        caplog.set_level("WARNING")
+        receipt, _, parsed, extractor = run_extract("FSA or HSA eligible: $5.00")
+        assert (
+            receipt.patient_responsibility
+            == extractor._build_receipt(parsed).patient_responsibility
+        )
+        assert "Amazon order could not be parsed" in caplog.text
+        assert "[Amounts do not reconcile: Amazon order could not be parsed]" in receipt.notes
+
+    def test_unparsed_order_number_warns_and_tags(self, run_extract, caplog):
+        caplog.set_level("WARNING")
+        receipt, _, parsed, extractor = run_extract("Order 111-2222222-3333333")
+        assert (
+            receipt.patient_responsibility
+            == extractor._build_receipt(parsed).patient_responsibility
+        )
+        assert "Amazon order could not be parsed" in caplog.text
+        assert "[Amounts do not reconcile: Amazon order could not be parsed]" in receipt.notes
+
+    @pytest.mark.parametrize("defect", ["date", "duplicate"])
+    def test_invalid_order_warns_and_tags(self, run_extract, caplog, defect):
+        caplog.set_level("WARNING")
+        text = (
+            self.LAYOUT_A.replace("October 29, 2026", "2026-10-29")
+            if defect == "date"
+            else self.LAYOUT_A + "\nGrand Total: $9.99\n"
+        )
+        receipt, _, _, _ = run_extract(text)
+        assert "Amazon order could not be parsed" in caplog.text
+        assert "[Amounts do not reconcile: Amazon order could not be parsed]" in receipt.notes
+
+    def test_non_amazon_text_and_filename_do_not_warn(self, run_extract, caplog):
+        caplog.set_level("WARNING")
+        receipt, _, _, _ = run_extract("ordinary pharmacy receipt", filename="amazon.pdf")
+        assert "Amazon order could not be parsed" not in caplog.text
+        assert "[Amounts do not reconcile: Amazon order could not be parsed]" not in receipt.notes
+
+    @pytest.mark.parametrize("notes", ["", "Existing note."], ids=["empty", "existing"])
+    def test_unparsed_order_appends_exact_tag(self, run_extract, notes):
+        receipt, _, _, _ = run_extract(
+            "FSA or HSA eligible: $5.00", amount=10, patient="Alice", notes=notes
+        )
+        tag = "[Amounts do not reconcile: Amazon order could not be parsed]"
+        assert receipt.notes == f"{notes} {tag}".strip()
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ["[Amounts do not reconcile", "[Patient not identified"],
+        ids=["amount", "patient"],
+    )
+    def test_amazon_neutralizes_reserved_prefix(self, run_extract, prefix):
+        receipt, _, _, _ = run_extract(self.LAYOUT_A, notes=[f"{prefix}: model]", "ordinary note"])
+        assert prefix not in receipt.notes
+        assert "ordinary note" in receipt.notes
+        assert "[Amazon order" in receipt.notes
+
+    def test_amazon_keeps_generated_mismatch_after_neutralization(self, run_extract):
+        text = self.LAYOUT_A.replace("Grand Total: $6.39", "Grand Total: $6.40")
+        receipt, _, _, _ = run_extract(text, notes="[Amounts do not reconcile: invented]")
+        assert receipt.notes.count("[Amounts do not reconcile") >= 1
+        assert "invented" in receipt.notes
+
+    @pytest.mark.parametrize(
+        "count,expected", [(0, None), (1, "1 eligible item"), (2, "2 eligible items")]
+    )
+    def test_eligible_item_count(self, run_extract, count, expected):
+        text = self.LAYOUT_A.replace(
+            "\nFSA or HSA eligible\n", "\n" + "FSA or HSA eligible\n" * count
+        )
+        receipt, _, _, _ = run_extract(text)
+        if expected:
+            assert expected in receipt.notes
+        else:
+            assert "eligible item" not in receipt.notes
+
+    @pytest.mark.parametrize("amount,problem", [("-$1.00", True), ("$0.00", False)])
+    def test_nonpositive_eligible_total_preserved(self, run_extract, amount, problem):
+        text = self.LAYOUT_A.replace("FSA or HSA eligible: $6.39", f"FSA or HSA eligible: {amount}")
+        receipt, _, _, _ = run_extract(text)
+        assert receipt.patient_responsibility == float(amount.replace("$", ""))
+        assert receipt.hsa_eligible is False
+        if problem:
+            assert (
+                "[Amounts do not reconcile: Eligible amount $-1.00 is negative.]" in receipt.notes
+            )
+            assert receipt.confidence_score <= 0.5
+        else:
+            assert "[Amounts do not reconcile" not in receipt.notes
+            assert receipt.confidence_score == 0.95
+
+    def test_missing_grand_total_is_described(self, run_extract):
+        receipt, _, _, _ = run_extract(self.LAYOUT_A.replace("Grand Total: $6.39\n", ""))
+        assert "grand total not printed]" in receipt.notes
 
 
 class TestPatientWholeWords:
@@ -1301,3 +1587,107 @@ class TestPatientWholeWords:
         path.touch()
         result = extractor.extract_eob(path)
         assert [claim.patient_name for claim in result.claims] == ["Unknown"]
+
+
+class TestStoredModelNotes:
+    @pytest.mark.parametrize(
+        "prefix",
+        ["[Amounts do not reconcile", "[Patient not identified"],
+        ids=["amount", "patient"],
+    )
+    def test_general_receipt_neutralizes_reserved_prefix(self, prefix):
+        receipt = VisionExtractor()._build_receipt(
+            {"document_type": "receipt", "notes": [f"{prefix}: model]", "ordinary note"]}
+        )
+        assert prefix not in receipt.notes
+        assert "ordinary note" in receipt.notes
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ["[Amounts do not reconcile", "[Patient not identified"],
+        ids=["amount", "patient"],
+    )
+    def test_multi_claim_neutralizes_reserved_prefix(self, prefix):
+        result = VisionExtractor()._build_multi_claim_extraction(
+            {"notes": [f"{prefix}: model]", "ordinary note"]}
+        )
+        assert prefix not in result.notes
+        assert "ordinary note" in result.notes
+
+    def test_general_receipt_retains_generated_mismatch(self):
+        result = VisionExtractor()._build_receipt(
+            {
+                "document_type": "eob",
+                "patient_responsibility": 5,
+                "stated_patient_total": 10,
+                "notes": "[Amounts do not reconcile: fabricated]",
+            }
+        )
+        assert result.notes.count("[Amounts do not reconcile") == 1
+        assert "printed total is $10.00" in result.notes
+
+
+class TestDirectPdfProviderState:
+    def test_restores_provider_after_success_and_keeps_it_for_nested_image(
+        self, tmp_path, monkeypatch
+    ):
+        extractor = VisionExtractor()
+        extractor._current_provider_skill = "cvs"
+        monkeypatch.setattr(
+            extractor, "_extract_text_with_pdfplumber", lambda path: TestAmazonOrderPdf.LAYOUT_A
+        )
+        monkeypatch.setattr(
+            extractor, "_convert_pdf_to_images", lambda path: [tmp_path / "page.png"]
+        )
+        seen = []
+        result = extractor._fallback_extraction("pdf")
+        monkeypatch.setattr(extractor, "_extract_with_text_and_image", lambda text, image: result)
+        # Force the image fallback while retaining the content-selected provider.
+        result.patient_responsibility = 0
+        monkeypatch.setattr(
+            extractor,
+            "extract_from_image",
+            lambda path: seen.append(extractor._current_provider_skill) or result,
+        )
+        monkeypatch.setattr(
+            extractor,
+            "_convert_pdf_to_images",
+            lambda path: [tmp_path / "a.png", tmp_path / "b.png"],
+        )
+        extractor.extract_from_pdf(tmp_path / "document.pdf")
+        assert seen == ["amazon", "amazon"]
+        assert extractor._current_provider_skill == "cvs"
+
+    @pytest.mark.parametrize("failure", ["text", "conversion", "extraction"])
+    def test_restores_provider_after_exception(self, tmp_path, monkeypatch, failure):
+        extractor = VisionExtractor()
+        extractor._current_provider_skill = "cvs"
+
+        def raises(*args):
+            raise RuntimeError(failure)
+
+        monkeypatch.setattr(
+            extractor,
+            "_extract_text_with_pdfplumber",
+            raises if failure == "text" else lambda path: TestAmazonOrderPdf.LAYOUT_A,
+        )
+        monkeypatch.setattr(
+            extractor,
+            "_convert_pdf_to_images",
+            raises if failure == "conversion" else lambda path: [],
+        )
+        monkeypatch.setattr(extractor, "_extract_with_text_and_image", raises)
+        with pytest.raises(RuntimeError, match=failure):
+            extractor.extract_from_pdf(tmp_path / "document.pdf")
+        assert extractor._current_provider_skill == "cvs"
+
+    def test_eob_still_resets_provider_after_exception(self, tmp_path, monkeypatch):
+        extractor = VisionExtractor()
+        path = tmp_path / "aetna.pdf"
+        path.touch()
+        monkeypatch.setattr(
+            extractor, "_init_client", lambda: (_ for _ in ()).throw(RuntimeError("failed"))
+        )
+        with pytest.raises(RuntimeError, match="failed"):
+            extractor.extract_eob(path)
+        assert extractor._current_provider_skill is None

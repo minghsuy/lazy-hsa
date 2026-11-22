@@ -197,6 +197,16 @@ def test_eligible_consistency():
     ]
 
 
+def test_negative_eligible_is_reported_and_zero_is_accepted():
+    order = parse_order(
+        LAYOUT_A.replace("FSA or HSA eligible: $6.39", "FSA or HSA eligible: -$1.00")
+    )
+    assert order is not None
+    assert order.eligible == Decimal("-1.00")
+    assert consistency_problems(order) == ["Eligible amount $-1.00 is negative."]
+    assert consistency_problems(replace(order, eligible=Decimal("0.00"))) == []
+
+
 def test_one_line_tax_matches_wrapped_layout():
     wrapped = parse_order(LAYOUT_A)
     one_line = parse_order(

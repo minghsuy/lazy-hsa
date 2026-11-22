@@ -141,6 +141,8 @@ def consistency_problems(order: AmazonOrder) -> list[str]:
                 f"Items subtotal ${order.items_subtotal} plus adjustments equals ${adjusted}, "
                 f"not total before tax ${order.total_before_tax}."
             )
+    if order.eligible is not None and order.eligible < 0:
+        problems.append(f"Eligible amount ${order.eligible} is negative.")
     if (
         order.eligible is not None
         and order.total_before_tax is not None
