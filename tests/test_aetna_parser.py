@@ -186,6 +186,53 @@ def test_falls_back_to_statement_date_when_detail_missing(stub):
     assert result.claims[0].service_date == "2026-01-15"  # falls back to statement_date
 
 
+def test_summary_line_with_one_amount_leaves_plan_share_blank(stub):
+    """Only one amount read on the summary line: the plan's share is not shown, not $0."""
+    summary = "Alice Test Provider A ELECTRONIC 1/10/2026 $25.00 (self)\n"
+    details = (
+        "Claim for Alice (self)\n"
+        "Provider: Test Provider A (Internal Medicine)\n"
+        "Claim ID: AET00001 Network: In\n"
+        "Service type and date\n"
+        "A B C D\n"
+        "Office visit on\n"
+        "1/10/26\n"
+        "75.00 25.00 50.00 25.00\n"
+    )
+
+    claim = stub(_aetna_text(summary, details))._parse_aetna_eob(Path("synthetic.pdf")).claims[0]
+
+    assert claim.insurance_paid is None
+    assert claim.patient_responsibility == 25.00
+
+
+def test_detail_without_billed_line_leaves_billed_blank(stub):
+    summary = "Alice Test Provider A $50.00 ELECTRONIC 1/10/2026 $50.00 $25.00 (self)\n"
+    details = (
+        "Claim for Alice (self)\n"
+        "Provider: Test Provider A (Internal Medicine)\n"
+        "Claim ID: AET00001 Network: In\n"
+        "Service type and date\n"
+        "A B C D\n"
+        "Office visit on\n"
+        "1/10/26\n"
+    )
+
+    claim = stub(_aetna_text(summary, details))._parse_aetna_eob(Path("synthetic.pdf")).claims[0]
+
+    assert claim.billed_amount is None
+    assert claim.insurance_paid == 50.00
+
+
+def test_claim_without_detail_leaves_billed_blank(stub):
+    summary = "Alice Mystery Provider $20.00 ELECTRONIC 1/10/2026 $20.00 $10.00 (self)\n"
+    details = "Claim for Alice (self)\nProvider: Different Name (Specialty)\nClaim ID: X\n"
+
+    claim = stub(_aetna_text(summary, details))._parse_aetna_eob(Path("synthetic.pdf")).claims[0]
+
+    assert claim.billed_amount is None
+
+
 def test_prefix_match_bridges_truncated_provider_name(stub):
     """Summary line truncates the provider; detail section has the full name.
 

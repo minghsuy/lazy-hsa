@@ -72,6 +72,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "pre-commit>=4.0.0",
+    "jsonschema>=4.23",
 ]
 
 [project.scripts]
@@ -89,6 +90,7 @@ exclude = [
     "src/watchers/capture_pull.py",
     "src/storage/backfill_export.py",
     "src/capture_service.py",
+    "src/contract.py",
     "src/ingest.py",
     "src/ingest_health.py",
     "src/ingest_job.py",

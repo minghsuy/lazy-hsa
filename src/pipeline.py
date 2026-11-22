@@ -214,10 +214,6 @@ class HSAReceiptPipeline:
                 eligible.append(claim)
             else:
                 skipped.append(claim)
-                logger.info(
-                    f"Skipping pre-HSA claim: {claim.patient_name} "
-                    f"{claim.service_date} ({claim.original_provider})"
-                )
 
         return eligible, skipped
 
@@ -273,7 +269,7 @@ class HSAReceiptPipeline:
 
         # Step 2: Filter by HSA date
         eligible, skipped = self.filter_claims_by_hsa_date(extraction.claims)
-        logger.info(f"Claims: {len(eligible)} eligible, {len(skipped)} skipped (pre-HSA)")
+        logger.info(f"Claims: {len(eligible)} eligible, {len(skipped)} pre-HSA")
 
         # Apply patient_hint override: if LLM defaulted all claims to
         # the primary family member, use the hint from the filename instead
@@ -298,7 +294,7 @@ class HSAReceiptPipeline:
                 "would_upload_to": f"EOBs/{extraction.category.title()}/",
             }
 
-        if not eligible:
+        if not extraction.claims:
             logger.warning("No eligible claims to process")
             return {
                 "file": str(file_path),
@@ -316,7 +312,7 @@ class HSAReceiptPipeline:
             date_for_filename = extraction.statement_date
         else:
             date_for_filename = min(
-                (c.service_date for c in eligible if c.service_date),
+                (c.service_date for c in extraction.claims if c.service_date),
                 default=datetime.now().strftime("%Y-%m-%d"),
             )
         year = int(date_for_filename[:4])
@@ -341,24 +337,31 @@ class HSAReceiptPipeline:
 
         # Step 4: Create sheet entry for EACH eligible claim
         results = []
-        for claim in eligible:
+        for claim in extraction.claims:
             # Normalize patient name (hint override already applied above)
             patient = self._normalize_patient_name(claim.patient_name)
             # The document did not show this claim's patient: it is filed under the default
             # member and tagged. A guessed patient must not decide what the record links
             # to or duplicates, so it stands alone until a person confirms it.
             guessed = claim.patient_name in ("", "Unknown")
+            pre_hsa = bool(
+                claim.service_date and claim.service_date < self.hsa_start_date.strftime("%Y-%m-%d")
+            )
 
             # Check for duplicate claims already in the spreadsheet
             same_claim = self.sheets.find_duplicates(
                 provider=extraction.payer_name,
                 service_date=claim.service_date,
                 amount=claim.patient_responsibility,
+                billed_amount=claim.billed_amount,
+                insurance_paid=claim.insurance_paid,
             )
             # Filter to same patient. A guessed patient proves nothing, so such a claim is
             # never made supplementary; a look-alike is only named in its notes (below),
             # which also marks a second ingest of the same file.
-            duplicates = [] if guessed else [d for d in same_claim if d.get("Patient") == patient]
+            duplicates = (
+                [] if guessed or pre_hsa else [d for d in same_claim if d.get("Patient") == patient]
+            )
 
             if duplicates:
                 existing_id = duplicates[0].get("ID")
@@ -372,7 +375,7 @@ class HSAReceiptPipeline:
                 # Find matching records (statements for EOBs, EOBs for statements)
                 matches = (
                     []
-                    if guessed
+                    if guessed or pre_hsa
                     else self.sheets.find_matching_statements(
                         service_date=claim.service_date,
                         patient=patient,
@@ -401,6 +404,8 @@ class HSAReceiptPipeline:
                         f"and amount] {notes}"
                     ).strip()
                 notes = f"{PATIENT_GUESS_TAG}: filed under {patient}] {notes}".strip()
+            if pre_hsa:
+                notes = f"[Service date is before the HSA start date] {notes}".strip()
             if source_note:
                 notes = f"{notes} {source_note}".strip()
 
@@ -420,13 +425,13 @@ class HSAReceiptPipeline:
                 billed_amount=claim.billed_amount,
                 insurance_paid=claim.insurance_paid,
                 patient_responsibility=claim.patient_responsibility,
-                hsa_eligible=True,
+                hsa_eligible=not pre_hsa,
                 document_type=doc_type,
                 file_path=file_path_str,
                 file_link=drive_file.web_link,
                 reimbursed=False,
                 reimbursement_date="",
-                reimbursement_amount=0,
+                reimbursement_amount=None,
                 confidence=extraction.confidence_score,
                 notes=notes,
                 original_provider=claim.original_provider,
@@ -470,7 +475,7 @@ class HSAReceiptPipeline:
                 "link": drive_file.web_link,
             },
             "claims_processed": results,
-            "claims_skipped": [c.to_dict() for c in skipped],
+            "claims_skipped": [],
         }
 
     def _load_config(self, config_path: str) -> dict:
@@ -704,6 +709,8 @@ class HSAReceiptPipeline:
                     provider=extraction.provider_name,
                     service_date=extraction.service_date,
                     amount=extraction.patient_responsibility,
+                    billed_amount=extraction.billed_amount,
+                    insurance_paid=extraction.insurance_paid,
                 )
                 if duplicates:
                     duplicate_of = duplicates[0].get("ID")
@@ -1087,6 +1094,7 @@ try:
     def summary(ctx):
         """Show HSA expense summary."""
         pipeline = ctx.obj["pipeline"]
+        _refuse_after_cutover(pipeline, "summary")
         data = pipeline.get_summary()
 
         table = Table(title="HSA Expense Summary")

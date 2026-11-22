@@ -59,8 +59,9 @@ class ExtractedReceipt:
     service_date: str | None  # YYYY-MM-DD
     service_type: str
     patient_name: str
-    billed_amount: float
-    insurance_paid: float
+    # None when the document did not show the amount; 0 only when it shows 0.
+    billed_amount: float | None
+    insurance_paid: float | None
     patient_responsibility: float
     hsa_eligible: bool
     category: str
@@ -89,8 +90,9 @@ class ExtractedClaim:
     patient_name: str
     original_provider: str  # Provider who rendered service (e.g., "Stanford Health")
     service_type: str
-    billed_amount: float
-    insurance_paid: float
+    # None when the document did not show the amount; 0 only when it shows 0.
+    billed_amount: float | None
+    insurance_paid: float | None
     patient_responsibility: float
     claim_number: str | None = None
 
@@ -390,6 +392,18 @@ STANFORD HEALTH CARE-SPECIFIC RULES:
 
 
 AMOUNT_MISMATCH_TAG = "[Amounts do not reconcile"
+
+
+def _normalize_model_notes(raw_notes: Any) -> str:
+    notes = (
+        "; ".join(str(note) for note in raw_notes)
+        if isinstance(raw_notes, list)
+        else str(raw_notes or "")
+    )
+    # Only this code may write the tag: a model note must not fake or hide it.
+    notes = notes.replace(AMOUNT_MISMATCH_TAG, "[amounts")
+    notes = notes.replace("[Patient not identified", "[patient not identified")
+    return notes
 
 
 def _cents(value) -> int | None:
@@ -892,7 +906,7 @@ Analyze the text above to extract the JSON data. The text contains content from 
             except ValueError:
                 service_date = raw_date
 
-            total_cost = self._parse_amount(row[col_map["total_cost"]])
+            total_cost = self._parse_optional_amount(row[col_map["total_cost"]])
             you_paid = self._parse_amount(row[col_map["you_paid"]])
             days_supply = row[col_map["days_supply"]] or ""
             quantity = row[col_map["quantity"]] or ""
@@ -905,7 +919,7 @@ Analyze the text above to extract the JSON data. The text contains content from 
                     original_provider=str(row[col_map["pharmacy"]] or "Express Scripts"),
                     service_type=service_type,
                     billed_amount=total_cost,
-                    insurance_paid=max(0, total_cost - you_paid),
+                    insurance_paid=None if total_cost is None else max(0, total_cost - you_paid),
                     patient_responsibility=you_paid,
                     claim_number=rx_number,
                 )
@@ -1073,7 +1087,8 @@ Analyze the text above to extract the JSON data. The text contains content from 
                 plan_share = amounts[0]
                 your_share = amounts[-1]
             elif len(amounts) == 1:
-                plan_share = 0.0
+                # Only one amount was read: the plan's share is not shown, not $0.
+                plan_share = None
                 your_share = amounts[0]
             else:
                 continue
@@ -1139,7 +1154,7 @@ Analyze the text above to extract the JSON data. The text contains content from 
 
             # Extract billed amount from totals line (line starting with a dollar amount)
             billed_match = re.search(r"^(\d[\d,]*\.\d{2})\s+", service_block, re.MULTILINE)
-            billed = float(billed_match.group(1).replace(",", "")) if billed_match else 0.0
+            billed = float(billed_match.group(1).replace(",", "")) if billed_match else None
 
             key = f"{patient}|{provider}"
             detail_lookup.setdefault(key, []).append(
@@ -1183,7 +1198,7 @@ Analyze the text above to extract the JSON data. The text contains content from 
                     patient_name=sc["patient_name"],
                     original_provider=detail.get("provider_full") or provider,
                     service_type=detail.get("service_type", "Medical Service"),
-                    billed_amount=detail.get("billed_amount", 0.0),
+                    billed_amount=detail.get("billed_amount"),
                     insurance_paid=sc["insurance_paid"],
                     patient_responsibility=sc["patient_responsibility"],
                     claim_number=detail.get("claim_number"),
@@ -1359,7 +1374,7 @@ Output JSON only, starting with {{ and ending with }}:"""
                     continue
 
                 amount = self._parse_amount(item.get("your_share"))
-                plan_paid = self._parse_amount(item.get("plan_share"))
+                plan_paid = self._parse_optional_amount(item.get("plan_share"))
 
                 raw_claims.append(
                     {
@@ -1368,7 +1383,8 @@ Output JSON only, starting with {{ and ending with }}:"""
                         or "Unknown",
                         "original_provider": item.get("provider", "Unknown"),
                         "service_type": "Medical Service",
-                        "billed_amount": amount,
+                        # A payment summary shows no billed amount.
+                        "billed_amount": None,
                         "insurance_paid": plan_paid,
                         "patient_responsibility": amount,
                     }
@@ -1381,7 +1397,7 @@ Output JSON only, starting with {{ and ending with }}:"""
 
                 for detail in service_group.get("service_details", []):
                     cost = self._parse_amount(detail.get("your_cost"))
-                    billed = self._parse_amount(detail.get("amount_billed"))
+                    billed = self._parse_optional_amount(detail.get("amount_billed"))
 
                     raw_claims.append(
                         {
@@ -1390,7 +1406,7 @@ Output JSON only, starting with {{ and ending with }}:"""
                             "original_provider": detail.get("provider", "Unknown"),
                             "service_type": detail.get("service", "Medical Service"),
                             "billed_amount": billed,
-                            "insurance_paid": max(0, billed - cost),
+                            "insurance_paid": None if billed is None else max(0, billed - cost),
                             "patient_responsibility": cost,
                         }
                     )
@@ -1422,8 +1438,8 @@ Output JSON only, starting with {{ and ending with }}:"""
                 patient_name=patient,
                 original_provider=raw_claim.get("original_provider") or "Unknown",
                 service_type=raw_claim.get("service_type") or "Unknown Service",
-                billed_amount=self._parse_amount(raw_claim.get("billed_amount")),
-                insurance_paid=self._parse_amount(raw_claim.get("insurance_paid")),
+                billed_amount=self._parse_optional_amount(raw_claim.get("billed_amount")),
+                insurance_paid=self._parse_optional_amount(raw_claim.get("insurance_paid")),
                 patient_responsibility=self._parse_amount(raw_claim.get("patient_responsibility")),
                 claim_number=raw_claim.get("claim_number"),
             )
@@ -1447,9 +1463,7 @@ Output JSON only, starting with {{ and ending with }}:"""
             payer_name=payer_name,
             category=parsed.get("category") or "medical",
             confidence_score=float(parsed.get("confidence_score") or 0.8),
-            notes="; ".join(parsed["notes"])
-            if isinstance(parsed.get("notes"), list)
-            else (parsed.get("notes") or ""),
+            notes=_normalize_model_notes(parsed.get("notes")),
             raw_extraction=parsed,
             claims=claims,
             statement_date=stmt_date,
@@ -1536,6 +1550,20 @@ Output JSON only, starting with {{ and ending with }}:"""
         except ValueError:
             return 0.0
 
+    def _parse_optional_amount(self, value: Any) -> float | None:
+        """Parse an amount the document may not show: None unless a number was read."""
+        # Missing, null, blank and unreadable text are all "not shown", never $0;
+        # an explicit 0 stays 0. A boolean, NaN or infinity is not an amount.
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            return None
+        if isinstance(value, str):
+            value = value.replace("$", "").replace(",", "").strip()
+        try:
+            amount = float(value)
+        except ValueError:
+            return None
+        return amount if math.isfinite(amount) else None
+
     def extract_from_image(self, image_path: Path) -> ExtractedReceipt:
         """Extract receipt data from a single image using vision model."""
         client = self._init_client()
@@ -1571,11 +1599,28 @@ Output JSON only, starting with {{ and ending with }}:"""
 
     def extract_from_pdf(self, pdf_path: Path) -> ExtractedReceipt:
         """Extract receipt data from PDF using pdfplumber text + first page image."""
+        previous_provider_skill = self._current_provider_skill
+        try:
+            return self._extract_pdf_content(pdf_path)
+        finally:
+            self._current_provider_skill = previous_provider_skill
+
+    def _extract_pdf_content(self, pdf_path: Path) -> ExtractedReceipt:
         # First, try to extract text from all pages using pdfplumber
         text_content = self._extract_text_with_pdfplumber(pdf_path)
         amazon_order = parse_order(text_content) if text_content else None
         if amazon_order:
             self._current_provider_skill = "amazon"
+        amazon_parse_failed = bool(
+            text_content
+            and not amazon_order
+            and (
+                "FSA or HSA eligible" in text_content
+                or re.search(r"\b\d{3}-\d{7}-\d{7}\b", text_content)
+            )
+        )
+        if amazon_parse_failed:
+            logger.warning("Amazon order could not be parsed")
 
         # Convert first page to image for visual context
         image_paths = self._convert_pdf_to_images(pdf_path)
@@ -1622,33 +1667,44 @@ Output JSON only, starting with {{ and ending with }}:"""
                         result.service_date = amazon_order.order_placed.isoformat()
                         result.document_type = "receipt"
                         result.patient_responsibility = float(amazon_order.eligible)
-                        result.billed_amount = float(amazon_order.items_subtotal or 0)
+                        # The subtotal covers the whole order; totals use patient responsibility.
+                        result.billed_amount = (
+                            None
+                            if amazon_order.items_subtotal is None
+                            else float(amazon_order.items_subtotal)
+                        )
                         result.insurance_paid = 0.0
                         result.hsa_eligible = amazon_order.eligible > 0
-                        raw_notes = result.raw_extraction.get("notes") or ""
-                        if isinstance(raw_notes, list):
-                            raw_notes = "; ".join(str(note) for note in raw_notes)
+                        raw_notes = _normalize_model_notes(result.raw_extraction.get("notes"))
                         # Only this code may write the review tag; a model-written one would
                         # route a page that reconciles into amount review.
-                        raw_notes = str(raw_notes).replace(AMOUNT_MISMATCH_TAG, "[amounts")
-                        notes = re.split(r"(?<=[.!?])\s+|;\s*|\n+", str(raw_notes))
+                        notes = re.split(r"(?<=[.!?])\s+|;\s*|\n+", raw_notes)
                         notes = [
                             note for note in notes if not re.search(r"\btax\s+rate\b", note, re.I)
                         ]
+                        grand_total = (
+                            f"${amazon_order.grand_total:.2f}"
+                            if amazon_order.grand_total is not None
+                            else "not printed"
+                        )
                         tag = (
                             f"[Amazon order {amazon_order.order_number}: eligible "
                             f"${amazon_order.eligible:.2f} read from the page; "
-                            f"grand total "
-                            f"{f'${amazon_order.grand_total:.2f}' if amazon_order.grand_total is not None else 'not printed'}"
+                            f"grand total {grand_total}"
                         )
                         if amazon_order.gift_card:
                             tag += f"; gift card ${amazon_order.gift_card:.2f} applied"
                         notes.append(tag + "]")
+                        if amazon_order.eligible_item_count:
+                            count = amazon_order.eligible_item_count
+                            notes.append(f"{count} eligible item{'s' if count != 1 else ''}")
                         problems = consistency_problems(amazon_order)
                         notes.extend(f"{AMOUNT_MISMATCH_TAG}: {problem}]" for problem in problems)
                         result.notes = " ".join(note for note in notes if note)
                         if problems:
                             result.confidence_score = min(result.confidence_score, 0.5)
+                if amazon_parse_failed:
+                    result.notes = f"{result.notes} {AMOUNT_MISMATCH_TAG}: Amazon order could not be parsed]".strip()
                 return result
 
             elif image_paths:
@@ -1794,7 +1850,7 @@ Output JSON only, starting with {{ and ending with }}:"""
         eligible_subtotal = float(parsed.get("eligible_subtotal") or 0)
         receipt_tax = float(parsed.get("receipt_tax") or 0)
         receipt_taxable_amount = float(parsed.get("receipt_taxable_amount") or 0)
-        insurance_paid = float(parsed.get("insurance_paid") or 0)
+        insurance_paid = self._parse_optional_amount(parsed.get("insurance_paid"))
 
         # Calculate tax on eligible items (Python does the math, not LLM)
         tax_on_eligible = 0.0
@@ -1814,13 +1870,12 @@ Output JSON only, starting with {{ and ending with }}:"""
             patient_responsibility = float(
                 parsed.get("patient_responsibility") or eligible_subtotal
             )
-            billed_amount = float(parsed.get("billed_amount") or eligible_subtotal)
+            billed_amount = self._parse_optional_amount(parsed.get("billed_amount"))
+            if billed_amount is None and eligible_subtotal > 0:
+                billed_amount = eligible_subtotal
 
         # Build notes with tax calculation if applicable
-        raw_notes = parsed.get("notes")
-        notes = "; ".join(raw_notes) if isinstance(raw_notes, list) else (raw_notes or "")
-        # Only this code may write the tag: a model note must not fake or hide it.
-        notes = notes.replace(AMOUNT_MISMATCH_TAG, "[amounts")
+        notes = _normalize_model_notes(parsed.get("notes"))
         if document_type in ("receipt", "prescription") and eligible_subtotal > 0:
             # Item prices are pre-tax. The subtotal is only on that basis when the receipt's
             # tax was read separately; a provider rule such as Amazon's reports a
@@ -1883,8 +1938,8 @@ Output JSON only, starting with {{ and ending with }}:"""
             service_date=None,
             service_type="Unknown (Needs Manual Review)",
             patient_name="Unknown",
-            billed_amount=0,
-            insurance_paid=0,
+            billed_amount=None,
+            insurance_paid=None,
             patient_responsibility=0,
             hsa_eligible=True,
             category="unknown",

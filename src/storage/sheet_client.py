@@ -316,8 +316,8 @@ class ReceiptRecord:
     service_type: str
     patient: str
     category: str
-    billed_amount: float
-    insurance_paid: float
+    billed_amount: float | None
+    insurance_paid: float | None
     patient_responsibility: float
     hsa_eligible: bool
     document_type: str
@@ -325,7 +325,7 @@ class ReceiptRecord:
     file_link: str
     reimbursed: bool
     reimbursement_date: str
-    reimbursement_amount: float
+    reimbursement_amount: float | None
     confidence: float
     notes: str
     # New fields for EOB linking (Phase 4)
@@ -485,8 +485,8 @@ class GSheetsClient:
             record.service_type,
             record.patient,
             record.category,
-            record.billed_amount,
-            record.insurance_paid,
+            "" if record.billed_amount is None else record.billed_amount,
+            "" if record.insurance_paid is None else record.insurance_paid,
             record.patient_responsibility,
             "Yes" if record.hsa_eligible else "No",
             record.document_type,
@@ -494,7 +494,7 @@ class GSheetsClient:
             record.file_link,
             "Yes" if record.reimbursed else "No",
             record.reimbursement_date or "",
-            record.reimbursement_amount or 0,
+            "" if record.reimbursement_amount is None else record.reimbursement_amount,
             f"{record.confidence:.0%}",
             "; ".join(record.notes) if isinstance(record.notes, list) else record.notes,
             # New fields for EOB linking
@@ -809,6 +809,8 @@ class GSheetsClient:
         service_date: str,
         amount: float,
         tolerance: float = 0.01,
+        billed_amount: float | None = None,
+        insurance_paid: float | None = None,
     ) -> list[dict[str, Any]]:
         """Find potential duplicate records by matching provider, date, and amount.
 
@@ -1621,7 +1623,7 @@ def create_record_from_extraction(
         file_link=file_link,
         reimbursed=False,
         reimbursement_date="",
-        reimbursement_amount=0,
+        reimbursement_amount=None,
         confidence=extraction.confidence_score,
         notes=extraction.notes,
         review_status=REVIEW_PENDING,
