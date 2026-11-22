@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-22
+
 The HEIC dependency fix, the source-only wording and the pinned CI actions below already shipped in the recreated v1.5.0 tag (2026-11-15), whose notes did not list them.
 
 ### Changed
