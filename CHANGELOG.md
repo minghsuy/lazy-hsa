@@ -7,12 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The HEIC dependency fix, the source-only wording and the pinned CI actions below already shipped in the recreated v1.5.0 tag (2026-11-15), whose notes did not list them.
+
 ### Changed
+- An amount a document does not show (billed or insurance) stays blank instead of becoming `0`, in extraction (including the Aetna, Express Scripts and Amazon readers) and in Sheet rows.
+- A claim dated before the HSA start is kept as a flagged, not-eligible record for review instead of being dropped.
+- `summary` refuses to run once the ledger has been cut over from the Sheet.
 - Clarified that the supported distribution is currently source-only; PyPI installation is not advertised until a verified publisher exists.
 - Pinned public CI actions to immutable revisions and made the required Bandit security job fail on qualifying findings.
 
 ### Fixed
 - Restored `pillow-heif` as a runtime dependency so clean installations can process the documented HEIC/HEIF receipt formats. Distribution verification now checks wheel metadata and exercises the conversion path from an installed wheel.
+- Amazon order pages: a parse failure is tagged for review, negative amounts are read correctly, and notes are sanitised consistently.
 
 ## [1.5.0] - 2026-05-06
 
