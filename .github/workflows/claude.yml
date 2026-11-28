@@ -60,6 +60,9 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           # claude_args: '--allowed-tools Bash(gh pr:*)'
+          # The post-review step below records the commit in this checkout; a review run
+          # from another worktree would make that record false, so the tool is disabled.
+          claude_args: --disallowedTools EnterWorktree
 
       # claude-code-action re-fetches the PR branch by name and checks it out, and the
       # commit cannot be pinned, so a push between the line above and that fetch would
@@ -71,4 +74,7 @@ jobs:
         env:
           PR: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
-          echo "checkout target: $(git rev-parse HEAD) (PR #$PR)"
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::reviewed HEAD is not a commit SHA: '$sha'"; exit 1; }
+          echo "checkout target: $sha (PR #$PR)"
